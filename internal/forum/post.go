@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/ggeurts/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/crypto"
 )
 
 // SigStatus describes the signature validation state of a post.

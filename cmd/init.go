@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ggeurts/gitorum/internal/crypto"
-	"github.com/ggeurts/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/repo"
 )
 
 var initCmd = &cobra.Command{

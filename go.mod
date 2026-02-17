@@ -1,4 +1,4 @@
-module github.com/ggeurts/gitorum
+module github.com/gosub/gitorum
 
 go 1.24.0
 

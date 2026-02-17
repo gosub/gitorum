@@ -12,7 +12,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/BurntSushi/toml"
-	"github.com/ggeurts/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/crypto"
 )
 
 // ForumMeta is the data stored in GITORUM.toml at the repository root.

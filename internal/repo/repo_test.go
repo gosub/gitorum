@@ -9,8 +9,8 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/ggeurts/gitorum/internal/crypto"
-	"github.com/ggeurts/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/repo"
 )
 
 // newIdentity is a test helper that panics on failure.

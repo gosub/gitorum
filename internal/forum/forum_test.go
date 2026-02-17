@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ggeurts/gitorum/internal/crypto"
-	"github.com/ggeurts/gitorum/internal/forum"
+	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 )
 
 // ---- helpers ----

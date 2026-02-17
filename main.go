@@ -1,6 +1,6 @@
 package main
 
-import "github.com/ggeurts/gitorum/cmd"
+import "github.com/gosub/gitorum/cmd"
 
 func main() {
 	cmd.Execute()

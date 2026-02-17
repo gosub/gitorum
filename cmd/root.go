@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ggeurts/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/crypto"
 )
 
 var rootCmd = &cobra.Command{

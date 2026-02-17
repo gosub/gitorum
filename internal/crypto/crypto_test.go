@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ggeurts/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/crypto"
 )
 
 // ---- keygen / identity ----
