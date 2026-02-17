@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/BurntSushi/toml"
@@ -110,6 +112,61 @@ func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 str
 		return err
 	}
 	return r.commitAll(identity, fmt.Sprintf("keys: add public key for %s", username))
+}
+
+// Categories returns the slugs of all forum categories found in the working
+// tree (directories that contain a META.toml file), sorted alphabetically.
+func (r *Repo) Categories() ([]string, error) {
+	entries, err := os.ReadDir(r.Path)
+	if err != nil {
+		return nil, fmt.Errorf("read repo root: %w", err)
+	}
+	var cats []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(r.Path, e.Name(), "META.toml")); err == nil {
+			cats = append(cats, e.Name())
+		}
+	}
+	sort.Strings(cats)
+	return cats, nil
+}
+
+// IsSynced reports whether the local HEAD matches the remote tracking ref for
+// origin and the working tree is clean.  Returns (true, "") when no remote is
+// configured (nothing to sync).
+func (r *Repo) IsSynced() (synced bool, remoteURL string) {
+	cfg, err := r.git.Config()
+	if err != nil {
+		return true, ""
+	}
+	origin, ok := cfg.Remotes["origin"]
+	if !ok || len(origin.URLs) == 0 {
+		return true, ""
+	}
+	remoteURL = origin.URLs[0]
+
+	// Check for uncommitted changes first.
+	wt, err := r.git.Worktree()
+	if err == nil {
+		if status, err := wt.Status(); err == nil && !status.IsClean() {
+			return false, remoteURL
+		}
+	}
+
+	head, err := r.git.Head()
+	if err != nil {
+		return false, remoteURL
+	}
+	remoteRef, err := r.git.Reference(
+		plumbing.NewRemoteReferenceName("origin", head.Name().Short()), true)
+	if err != nil {
+		// Remote ref not found means we haven't pushed yet.
+		return false, remoteURL
+	}
+	return head.Hash() == remoteRef.Hash(), remoteURL
 }
 
 // Git returns the underlying go-git repository for advanced callers.

@@ -7,32 +7,29 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+
+	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/repo"
 )
 
-// Server holds runtime configuration. In step 5 it will also hold a *repo.Repo
-// and a *crypto.Identity; for now it serves stub data.
+// Server holds runtime state for the HTTP server.
 type Server struct {
 	Port     int
 	RepoPath string
+	repo     *repo.Repo
+	identity *crypto.Identity
 }
 
-// New creates a Server with the given configuration.
-func New(port int, repoPath string) *Server {
-	return &Server{Port: port, RepoPath: repoPath}
+// New creates a Server. repo and identity may be nil when the forum has not
+// been initialized yet; handlers degrade gracefully in that case.
+func New(port int, repoPath string, r *repo.Repo, id *crypto.Identity) *Server {
+	return &Server{Port: port, RepoPath: repoPath, repo: r, identity: id}
 }
 
-// ListenAndServe registers all routes and starts the HTTP server.
+// Handler returns an http.Handler with all routes registered.
 // staticFS is typically ui.StaticFS.
-func (s *Server) ListenAndServe(staticFS fs.FS) error {
+func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux := http.NewServeMux()
-	s.registerRoutes(mux, staticFS)
-	addr := fmt.Sprintf(":%d", s.Port)
-	log.Printf("Gitorum listening on http://localhost%s  (repo: %s)", addr, s.RepoPath)
-	return http.ListenAndServe(addr, mux)
-}
-
-func (s *Server) registerRoutes(mux *http.ServeMux, staticFS fs.FS) {
-	// JSON API – order matters: more specific patterns first.
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/sync", s.handleSync)
 	mux.HandleFunc("GET /api/categories", s.handleCategories)
@@ -42,9 +39,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux, staticFS fs.FS) {
 	mux.HandleFunc("POST /api/threads", s.handleNewThread)
 	mux.HandleFunc("POST /api/admin/delete", s.handleAdminDelete)
 	mux.HandleFunc("POST /api/admin/addkey", s.handleAdminAddKey)
-
-	// SPA catch-all: serve embedded static files.
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	return mux
+}
+
+// ListenAndServe starts the HTTP server.
+func (s *Server) ListenAndServe(staticFS fs.FS) error {
+	addr := fmt.Sprintf(":%d", s.Port)
+	log.Printf("Gitorum listening on http://localhost%s  (repo: %s)", addr, s.RepoPath)
+	return http.ListenAndServe(addr, s.Handler(staticFS))
 }
 
 // ---- helpers ---------------------------------------------------------------

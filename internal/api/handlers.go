@@ -1,110 +1,139 @@
 package api
 
 import (
+	"log"
 	"net/http"
-)
+	"path/filepath"
 
-// NOTE: All handlers currently return stub data.
-// Step 5 will replace stubs with real repo/identity access.
+	"github.com/gosub/gitorum/internal/forum"
+)
 
 // GET /api/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// TODO(step5): load identity and repo meta; check remote sync state.
-	writeJSON(w, http.StatusOK, StatusResponse{
-		Username:  "demo",
-		PubKey:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		IsAdmin:   false,
-		ForumName: "Gitorum Demo",
-		RemoteURL: "",
-		Synced:    false,
-	})
+	resp := StatusResponse{}
+
+	if s.identity != nil {
+		resp.Username = s.identity.Username
+		resp.PubKey = s.identity.PublicKey
+	}
+
+	if s.repo != nil {
+		if meta, err := s.repo.ReadMeta(); err == nil {
+			resp.ForumName = meta.Name
+			if s.identity != nil {
+				resp.IsAdmin = s.identity.PublicKey == meta.AdminPubkey
+			}
+		}
+		resp.Synced, resp.RemoteURL = s.repo.IsSynced()
+	} else {
+		resp.ForumName = "Gitorum"
+		resp.Synced = true
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // GET /api/sync
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	// TODO(step7): pull --rebase, then push.
+	// TODO(step7): pull --rebase then push.
 	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "sync not yet implemented"})
 }
 
 // GET /api/categories
 func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
-	// TODO(step5): enumerate category directories in repo.
-	writeJSON(w, http.StatusOK, CategoriesResponse{
-		Categories: []CategorySummary{
-			{Slug: "general", Name: "General", Description: "General discussion", ThreadCount: 1},
-			{Slug: "dev", Name: "Development", Description: "Technical topics", ThreadCount: 1},
-		},
-	})
+	if s.repo == nil {
+		writeJSON(w, http.StatusOK, CategoriesResponse{Categories: []CategorySummary{}})
+		return
+	}
+
+	slugs, err := s.repo.Categories()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "list categories: "+err.Error())
+		return
+	}
+
+	cats := make([]CategorySummary, 0, len(slugs))
+	for _, slug := range slugs {
+		catDir := filepath.Join(s.repo.Path, slug)
+		cat, err := forum.LoadCategory(slug, catDir)
+		if err != nil {
+			log.Printf("handleCategories: skip %q: %v", slug, err)
+			continue
+		}
+		cats = append(cats, CategorySummary{
+			Slug:        cat.Slug,
+			Name:        cat.Name,
+			Description: cat.Description,
+			ThreadCount: len(cat.ThreadSlugs),
+		})
+	}
+	writeJSON(w, http.StatusOK, CategoriesResponse{Categories: cats})
 }
 
 // GET /api/categories/{cat}/threads
 func (s *Server) handleThreads(w http.ResponseWriter, r *http.Request) {
-	cat := r.PathValue("cat")
-	// TODO(step5): load category and enumerate threads from repo.
-	resp := ThreadsResponse{
-		Category:     cat,
-		CategoryName: cat,
-		Threads:      []ThreadSummary{},
+	catSlug := r.PathValue("cat")
+
+	if s.repo == nil {
+		writeJSON(w, http.StatusOK, ThreadsResponse{
+			Category: catSlug, CategoryName: catSlug, Threads: []ThreadSummary{},
+		})
+		return
 	}
-	switch cat {
-	case "general":
-		resp.CategoryName = "General"
-		resp.Threads = []ThreadSummary{
-			{
-				Slug:        "hello-world",
-				Title:       "Hello, Gitorum!",
-				Author:      "alice",
-				ReplyCount:  1,
-				CreatedAt:   "2026-02-17T10:00:00Z",
-				LastReplyAt: "2026-02-17T11:30:00Z",
-			},
-		}
-	case "dev":
-		resp.CategoryName = "Development"
-		resp.Threads = []ThreadSummary{
-			{
-				Slug:        "roadmap",
-				Title:       "Project roadmap",
-				Author:      "admin",
-				ReplyCount:  0,
-				CreatedAt:   "2026-02-17T09:00:00Z",
-				LastReplyAt: "2026-02-17T09:00:00Z",
-			},
-		}
+
+	catDir := filepath.Join(s.repo.Path, catSlug)
+	cat, err := forum.LoadCategory(catSlug, catDir)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "category not found")
+		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+
+	keysDir := filepath.Join(s.repo.Path, "keys")
+	summaries := make([]ThreadSummary, 0, len(cat.ThreadSlugs))
+	for _, slug := range cat.ThreadSlugs {
+		threadDir := filepath.Join(catDir, slug)
+		scan, err := forum.ScanThread(slug, threadDir, keysDir)
+		if err != nil {
+			log.Printf("handleThreads: skip thread %q: %v", slug, err)
+			continue
+		}
+		summaries = append(summaries, threadSummaryFrom(scan))
+	}
+
+	writeJSON(w, http.StatusOK, ThreadsResponse{
+		Category:     catSlug,
+		CategoryName: cat.Name,
+		Threads:      summaries,
+	})
 }
 
 // GET /api/threads/{cat}/{thread}
 func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
-	cat := r.PathValue("cat")
-	thread := r.PathValue("thread")
-	// TODO(step5): load thread from repo using forum.LoadThread.
-	posts := []PostResponse{
-		{
-			Author:    "alice",
-			PubKey:    "Aa1b2c3d",
-			Timestamp: "2026-02-17T10:00:00Z",
-			Parent:    "",
-			Body:      "Hello, Gitorum!\n\nThis is the first post on our **decentralized forum**.\n\nAll content lives in a git repository — no servers, no databases.",
-			BodyHTML:  "<p>Hello, Gitorum!</p>\n<p>This is the first post on our <strong>decentralized forum</strong>.</p>\n<p>All content lives in a git repository — no servers, no databases.</p>",
-			Filename:  "0000_root.md",
-			SigStatus: "valid",
-		},
-		{
-			Author:    "bob",
-			PubKey:    "Bb9e8f7a",
-			Timestamp: "2026-02-17T11:30:00Z",
-			Parent:    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-			Body:      "Welcome! This is a great concept.\n\nLooking forward to seeing this develop.",
-			BodyHTML:  "<p>Welcome! This is a great concept.</p>\n<p>Looking forward to seeing this develop.</p>",
-			Filename:  "1708123456789_a3f9c1b2.md",
-			SigStatus: "valid",
-		},
+	catSlug := r.PathValue("cat")
+	threadSlug := r.PathValue("thread")
+
+	if s.repo == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return
 	}
+
+	threadDir := filepath.Join(s.repo.Path, catSlug, threadSlug)
+	keysDir := filepath.Join(s.repo.Path, "keys")
+
+	thread, err := forum.LoadThread(catSlug, threadSlug, threadDir, keysDir)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "thread not found")
+		return
+	}
+
+	posts := make([]PostResponse, 0, len(thread.Posts))
+	for _, p := range thread.Posts {
+		posts = append(posts, postToResponse(p))
+	}
+
 	writeJSON(w, http.StatusOK, ThreadResponse{
-		Category: cat,
-		Slug:     thread,
+		Category: catSlug,
+		Slug:     threadSlug,
 		Posts:    posts,
 	})
 }
@@ -146,7 +175,7 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// TODO(step8): verify caller is admin, write tombstone, commit, push.
+	// TODO(step8): verify admin, write tombstone, commit, push.
 	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "tombstone not yet implemented (step 8)"})
 }
 
@@ -161,6 +190,6 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "username and pubkey are required")
 		return
 	}
-	// TODO(step8): verify caller is admin, write keys/<username>.pub, commit, push.
+	// TODO(step8): verify admin, write keys/<username>.pub, commit, push.
 	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "addkey not yet implemented (step 8)"})
 }

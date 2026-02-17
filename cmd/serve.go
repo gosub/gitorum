@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/gosub/gitorum/internal/api"
+	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/repo"
 	"github.com/gosub/gitorum/internal/ui"
 )
 
@@ -36,7 +39,6 @@ func init() {
 }
 
 func defaultIdentityHint() string {
-	// Best-effort; errors are non-fatal here.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "$XDG_CONFIG_HOME/gitorum/identity.toml"
@@ -50,6 +52,31 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve repo path: %w", err)
 	}
 
-	srv := api.New(servePort, absRepo)
+	identPath := serveIdentity
+	if identPath == "" {
+		identPath = crypto.DefaultIdentityPath()
+	}
+
+	// Load identity — non-fatal if missing (setup wizard will handle it).
+	var id *crypto.Identity
+	if loaded, err := crypto.LoadIdentity(identPath); err == nil {
+		id = loaded
+		log.Printf("Identity: @%s", id.Username)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("load identity: %w", err)
+	} else {
+		log.Printf("No identity file found at %s; run 'gitorum keygen' first", identPath)
+	}
+
+	// Open forum repo — non-fatal if missing (setup wizard will handle it).
+	var r *repo.Repo
+	if opened, err := repo.Open(absRepo); err == nil {
+		r = opened
+		log.Printf("Forum repo: %s", absRepo)
+	} else {
+		log.Printf("No forum repo at %s; run 'gitorum init' first", absRepo)
+	}
+
+	srv := api.New(servePort, absRepo, r, id)
 	return srv.ListenAndServe(ui.StaticFS)
 }
