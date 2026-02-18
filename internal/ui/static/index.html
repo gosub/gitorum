@@ -16,12 +16,14 @@
         <span id="sync-label">Connecting…</span>
         <button class="sync-btn" id="sync-btn" onclick="triggerSync()" title="Pull &amp; push">⟳</button>
       </div>
+      <div id="last-sync"></div>
 
       <ul id="cat-list"></ul>
 
       <div id="admin-panel" hidden>
         <div class="admin-label">Admin</div>
         <button class="btn btn-sm" onclick="showAdminAddKey()">+ Add User Key</button>
+        <button class="btn btn-sm" onclick="showAdminCreateCategory()">+ New Category</button>
       </div>
 
       <div id="identity"></div>

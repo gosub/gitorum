@@ -595,7 +595,7 @@ func TestSignTombstone_Valid(t *testing.T) {
 	}
 }
 
-func TestLoadThread_SkipsTombstoned(t *testing.T) {
+func TestLoadThread_TombstonedAsPlaceholder(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
@@ -604,32 +604,43 @@ func TestLoadThread_SkipsTombstoned(t *testing.T) {
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	rootContent := signedPost(t, threadDir, forum.RootFilename, id, "", "Root post")
 
-	// Add two replies.
+	// Add two replies, using a consistent filename for reply2 to avoid a
+	// timestamp race between the write and the tombstone creation.
 	time.Sleep(2 * time.Millisecond)
 	reply1Name := forum.NewPostFilename("Reply one")
 	signedPost(t, threadDir, reply1Name, id, forum.PostHash(rootContent), "Reply one")
+
 	time.Sleep(2 * time.Millisecond)
-	reply2Content := signedPost(t, threadDir, forum.NewPostFilename("Reply two"), id, forum.PostHash(rootContent), "Reply two")
 	reply2Name := forum.NewPostFilename("Reply two")
+	reply2Content := signedPost(t, threadDir, reply2Name, id, forum.PostHash(rootContent), "Reply two")
 
 	// Tombstone reply 2.
 	tomb, _ := forum.SignTombstone(id, reply2Content)
 	tomb.Filename = forum.TombstoneFilename(reply2Name)
-	tombContent := tomb.Format()
-	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tombContent, 0o644)
+	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tomb.Format(), 0o644)
 
 	thread, err := forum.LoadThread("cat", "slug", threadDir, keysDir)
 	if err != nil {
 		t.Fatalf("LoadThread: %v", err)
 	}
-	// Root + reply1 only; reply2 is tombstoned.
-	if len(thread.Posts) != 2 {
-		t.Errorf("Posts: got %d, want 2 (tombstoned post excluded)", len(thread.Posts))
+	// Root + reply1 + [deleted] placeholder — tombstoned post stays in list.
+	if len(thread.Posts) != 3 {
+		t.Errorf("Posts: got %d, want 3 (root + reply1 + deleted placeholder)", len(thread.Posts))
 	}
+	tombstoned := 0
 	for _, p := range thread.Posts {
-		if p.Body == "Reply two" {
-			t.Error("tombstoned post should not appear in thread")
+		if p.Tombstoned {
+			tombstoned++
+			if p.Body != "" {
+				t.Errorf("tombstoned post body should be empty, got %q", p.Body)
+			}
 		}
+		if p.Body == "Reply two" {
+			t.Error("tombstoned post body should not be visible")
+		}
+	}
+	if tombstoned != 1 {
+		t.Errorf("expected 1 tombstoned post, got %d", tombstoned)
 	}
 }
 

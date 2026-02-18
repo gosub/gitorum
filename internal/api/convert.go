@@ -8,6 +8,15 @@ import (
 
 // postToResponse converts a *forum.Post to the wire type sent to the browser.
 func postToResponse(p *forum.Post) PostResponse {
+	if p.Tombstoned {
+		return PostResponse{
+			Filename:   p.Filename,
+			Body:       "[deleted]",
+			BodyHTML:   "<p><em>[deleted]</em></p>",
+			SigStatus:  "deleted",
+			Tombstoned: true,
+		}
+	}
 	return PostResponse{
 		Author:    p.Author,
 		PubKey:    p.PubKey,

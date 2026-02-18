@@ -2,6 +2,7 @@
 package repo
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/gosub/gitorum/internal/crypto"
 )
+
+const gitTimeout = 30 * time.Second
 
 // ForumMeta is the data stored in GITORUM.toml at the repository root.
 type ForumMeta struct {
@@ -61,7 +64,8 @@ func Init(path string, meta ForumMeta, identity *crypto.Identity) (*Repo, error)
 	}
 
 	// Stage and commit
-	if err := r.commitAll(identity, "init: initialize forum repository"); err != nil {
+	if err := r.commitFiles(identity, "init: initialize forum repository",
+		"GITORUM.toml", filepath.Join("keys", identity.Username+".pub")); err != nil {
 		return nil, err
 	}
 
@@ -111,7 +115,31 @@ func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 str
 	if err := r.writePublicKey(username, pubkeyB64); err != nil {
 		return err
 	}
-	return r.commitAll(identity, fmt.Sprintf("keys: add public key for %s", username))
+	return r.commitFiles(identity, fmt.Sprintf("keys: add public key for %s", username),
+		filepath.Join("keys", username+".pub"))
+}
+
+// CreateCategory creates a new forum category by writing META.toml and
+// committing it to the repository.
+func (r *Repo) CreateCategory(identity *crypto.Identity, slug, name, description string) error {
+	catDir := filepath.Join(r.Path, slug)
+	if err := os.MkdirAll(catDir, 0o755); err != nil {
+		return fmt.Errorf("create category dir: %w", err)
+	}
+	content := fmt.Sprintf("name = %q\ndescription = %q\n", name, description)
+	if err := os.WriteFile(filepath.Join(catDir, "META.toml"), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write META.toml: %w", err)
+	}
+	return r.commitFiles(identity, fmt.Sprintf("category: add %s", slug),
+		filepath.Join(slug, "META.toml"))
+}
+
+// UpdateMeta rewrites GITORUM.toml with new metadata and commits the change.
+func (r *Repo) UpdateMeta(identity *crypto.Identity, meta ForumMeta) error {
+	if err := r.writeMeta(meta); err != nil {
+		return err
+	}
+	return r.commitFiles(identity, "config: update forum metadata", "GITORUM.toml")
 }
 
 // Categories returns the slugs of all forum categories found in the working
@@ -202,7 +230,7 @@ func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []b
 
 // Pull fetches from origin and fast-forward merges into the current branch.
 // Returns nil when there is no remote configured or the ref is already up to
-// date. Merge conflicts are returned as errors.
+// date. Merge conflicts are returned as errors. A 30-second timeout applies.
 func (r *Repo) Pull() error {
 	cfg, err := r.git.Config()
 	if err != nil {
@@ -222,7 +250,10 @@ func (r *Repo) Pull() error {
 		return fmt.Errorf("worktree: %w", err)
 	}
 
-	err = wt.Pull(&gogit.PullOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	err = wt.PullContext(ctx, &gogit.PullOptions{
 		RemoteName:    "origin",
 		ReferenceName: head.Name(),
 		Force:         false,
@@ -234,7 +265,8 @@ func (r *Repo) Pull() error {
 }
 
 // Push attempts to push to the origin remote. Returns nil if there is no
-// remote configured or the ref is already up to date.
+// remote configured or the ref is already up to date. A 30-second timeout
+// applies.
 func (r *Repo) Push() error {
 	cfg, err := r.git.Config()
 	if err != nil {
@@ -244,7 +276,10 @@ func (r *Repo) Push() error {
 		return nil
 	}
 
-	err = r.git.Push(&gogit.PushOptions{RemoteName: "origin"})
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	err = r.git.PushContext(ctx, &gogit.PushOptions{RemoteName: "origin"})
 	if err == nil || err == gogit.NoErrAlreadyUpToDate {
 		return nil
 	}
@@ -278,14 +313,16 @@ func (r *Repo) writePublicKey(username, pubkeyB64 string) error {
 	return os.WriteFile(path, []byte(pubkeyB64+"\n"), 0o644)
 }
 
-// commitAll stages every change in the working tree and creates a commit.
-func (r *Repo) commitAll(identity *crypto.Identity, message string) error {
+// commitFiles stages the specified relative paths and creates a commit.
+func (r *Repo) commitFiles(identity *crypto.Identity, message string, relPaths ...string) error {
 	wt, err := r.git.Worktree()
 	if err != nil {
 		return fmt.Errorf("worktree: %w", err)
 	}
-	if err := wt.AddGlob("."); err != nil {
-		return fmt.Errorf("git add: %w", err)
+	for _, p := range relPaths {
+		if _, err := wt.Add(p); err != nil {
+			return fmt.Errorf("git add %s: %w", p, err)
+		}
 	}
 	sig := &object.Signature{
 		Name:  identity.Username,

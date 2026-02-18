@@ -6,35 +6,48 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
 )
 
+const maxBodyBytes = 64 << 10 // 64 KB
+
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // GET /api/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	lastSyncAt := s.lastSyncAt
+	repo := s.repo
+	id := s.identity
+	s.mu.Unlock()
+
 	resp := StatusResponse{}
 
-	if s.identity != nil {
-		resp.Username = s.identity.Username
-		resp.PubKey = s.identity.PublicKey
+	if id != nil {
+		resp.Username = id.Username
+		resp.PubKey = id.PublicKey
 	}
 
-	if s.repo != nil {
+	if repo != nil {
 		resp.Initialized = true
-		if meta, err := s.repo.ReadMeta(); err == nil {
+		if meta, err := repo.ReadMeta(); err == nil {
 			resp.ForumName = meta.Name
-			if s.identity != nil {
-				resp.IsAdmin = s.identity.PublicKey == meta.AdminPubkey
+			if id != nil {
+				resp.IsAdmin = id.PublicKey == meta.AdminPubkey
 			}
 		}
-		resp.Synced, resp.RemoteURL = s.repo.IsSynced()
+		resp.Synced, resp.RemoteURL = repo.IsSynced()
 	} else {
 		resp.ForumName = "Gitorum"
 		resp.Synced = true
+	}
+
+	if !lastSyncAt.IsZero() {
+		resp.LastSyncAt = lastSyncAt.UTC().Format(time.RFC3339)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -42,6 +55,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/setup
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.repo != nil {
 		apiError(w, http.StatusConflict, "forum is already initialized")
 		return
@@ -111,6 +127,10 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "pull: "+err.Error())
 		return
 	}
+
+	s.mu.Lock()
+	s.lastSyncAt = time.Now()
+	s.mu.Unlock()
 
 	if err := s.repo.Push(); err != nil {
 		log.Printf("handleSync: push: %v", err)
@@ -223,6 +243,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	catSlug := r.PathValue("cat")
 	threadSlug := r.PathValue("thread")
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req ReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -266,8 +287,44 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
 }
 
+// POST /api/categories
+func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
+	var req CreateCategoryRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Slug == "" || req.Name == "" {
+		apiError(w, http.StatusBadRequest, "slug and name are required")
+		return
+	}
+	if !slugRe.MatchString(req.Slug) {
+		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
+		return
+	}
+	if !s.requireAdmin(w) {
+		return
+	}
+
+	catMetaPath := filepath.Join(s.repo.Path, req.Slug, "META.toml")
+	if _, err := os.Stat(catMetaPath); err == nil {
+		apiError(w, http.StatusConflict, "category slug already exists")
+		return
+	}
+
+	if err := s.repo.CreateCategory(s.identity, req.Slug, req.Name, req.Description); err != nil {
+		apiError(w, http.StatusInternalServerError, "create category: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleCreateCategory: push: %v", err)
+	}
+	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
+}
+
 // POST /api/threads
 func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req NewThreadRequest
 	if err := readJSON(r, &req); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())

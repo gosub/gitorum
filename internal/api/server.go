@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/repo"
@@ -18,6 +20,8 @@ type Server struct {
 	RepoPath string
 	repo     *repo.Repo
 	identity *crypto.Identity
+	mu         sync.Mutex // guards repo, identity, and lastSyncAt
+	lastSyncAt time.Time
 }
 
 // New creates a Server. repo and identity may be nil when the forum has not
@@ -38,6 +42,7 @@ func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/threads/{cat}/{thread}", s.handleThread)
 	mux.HandleFunc("POST /api/threads/{cat}/{thread}/reply", s.handleReply)
 	mux.HandleFunc("POST /api/threads", s.handleNewThread)
+	mux.HandleFunc("POST /api/categories", s.handleCreateCategory)
 	mux.HandleFunc("POST /api/admin/delete", s.handleAdminDelete)
 	mux.HandleFunc("POST /api/admin/addkey", s.handleAdminAddKey)
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))

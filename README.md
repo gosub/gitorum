@@ -87,7 +87,9 @@ followed by a blank line and the raw body.
 Requires Go 1.22 or later.
 
 ```sh
-go build -o gitorum .
+make        # builds build/gitorum
+make test   # runs all tests
+make clean  # removes build/
 ```
 
 ## Command line usage
@@ -126,10 +128,30 @@ The web UI provides:
 - Thread view with rendered Markdown and per-post signature badges
 - Reply and new-thread forms
 - Admin panel (visible only when the local key matches the forum admin key)
-  for adding user keys and tombstoning posts
+  for adding user keys, creating categories, and tombstoning posts
 
 If the forum has not been initialized yet, the browser will show a setup
 wizard instead of the forum.
+
+### `gitorum clone`
+
+```sh
+gitorum clone <url> [dir]
+```
+
+Clones a remote forum repository. The directory defaults to the last path
+component of the URL with `.git` stripped. After cloning, run
+`gitorum serve --repo <dir>`.
+
+### `gitorum config`
+
+```sh
+gitorum config [--repo .] [--name "New Name"] [--remote <url>]
+```
+
+Without flags, prints the current forum name, admin key, and remote URL.
+With `--name`, updates the forum display name (commits the change).
+With `--remote`, sets the `origin` remote URL.
 
 ## Mini tutorial
 
@@ -139,7 +161,7 @@ participant to join.
 **1. Build the binary**
 
 ```sh
-make
+make   # output: build/gitorum
 ```
 
 **2. Create your identity**

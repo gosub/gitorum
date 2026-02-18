@@ -35,17 +35,18 @@ type ThreadResponse struct {
 }
 
 // PostResponse is the wire representation of a post sent to the browser.
-// SigStatus is "valid", "invalid", or "missing".
+// SigStatus is "valid", "invalid", "missing", or "deleted" (tombstoned).
 type PostResponse struct {
-	Author    string `json:"author"`
-	PubKey    string `json:"pubkey"`
-	Timestamp string `json:"timestamp"`
-	Parent    string `json:"parent"`
-	Body      string `json:"body"`
-	BodyHTML  string `json:"body_html"`
-	Filename  string `json:"filename"`
-	SigStatus string `json:"sig_status"`
-	SigError  string `json:"sig_error,omitempty"`
+	Author     string `json:"author"`
+	PubKey     string `json:"pubkey"`
+	Timestamp  string `json:"timestamp"`
+	Parent     string `json:"parent"`
+	Body       string `json:"body"`
+	BodyHTML   string `json:"body_html"`
+	Filename   string `json:"filename"`
+	SigStatus  string `json:"sig_status"`
+	SigError   string `json:"sig_error,omitempty"`
+	Tombstoned bool   `json:"tombstoned,omitempty"`
 }
 
 type StatusResponse struct {
@@ -55,7 +56,8 @@ type StatusResponse struct {
 	ForumName   string `json:"forum_name"`
 	RemoteURL   string `json:"remote_url,omitempty"`
 	Synced      bool   `json:"synced"`
-	Initialized bool   `json:"initialized"` // false until forum repo exists
+	Initialized bool   `json:"initialized"`              // false until forum repo exists
+	LastSyncAt  string `json:"last_sync_at,omitempty"` // RFC3339, set after first sync
 }
 
 type SetupRequest struct {
@@ -85,6 +87,12 @@ type AdminDeleteRequest struct {
 type AdminAddKeyRequest struct {
 	Username string `json:"username"`
 	PubKey   string `json:"pubkey"`
+}
+
+type CreateCategoryRequest struct {
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // ---- generic ---------------------------------------------------------------

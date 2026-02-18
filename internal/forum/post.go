@@ -48,9 +48,10 @@ type Post struct {
 	BodyHTML string // body rendered to HTML by goldmark
 
 	// Metadata
-	Filename  string    // e.g. "0000_root.md" or "1708123456789_a3f9c1b2.md"
-	SigStatus SigStatus // set by VerifySignature
-	SigError  string    // human-readable reason when SigStatus != SigValid
+	Filename   string    // e.g. "0000_root.md" or "1708123456789_a3f9c1b2.md"
+	SigStatus  SigStatus // set by VerifySignature
+	SigError   string    // human-readable reason when SigStatus != SigValid
+	Tombstoned bool      // true when a tombstone file exists; body/author are cleared
 }
 
 // ParsePost parses a .md file with TOML front matter fenced by +++.

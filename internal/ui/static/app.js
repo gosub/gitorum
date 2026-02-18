@@ -38,12 +38,18 @@ async function refreshStatus() {
 
   const dot   = $('sync-dot');
   const label = $('sync-label');
+  const lastSyncEl = $('last-sync');
   if (STATUS.synced) {
     dot.className    = 'dot green';
     label.textContent = 'Synced';
   } else {
     dot.className    = 'dot red';
     label.textContent = 'Unsynced';
+  }
+  if (lastSyncEl) {
+    lastSyncEl.textContent = STATUS.last_sync_at
+      ? 'Last sync: ' + relTime(STATUS.last_sync_at)
+      : '';
   }
 
   const cats = await apiFetch('/categories').catch(() => ({ categories: [] }));
@@ -124,6 +130,12 @@ async function submitSetup(e) {
   const forumName = $('setup-forum-name').value.trim();
   const remoteURL = $('setup-remote').value.trim();
   const btn = e.target.querySelector('[type=submit]');
+
+  if (remoteURL && !/^(https?:\/\/|git@|ssh:\/\/)/.test(remoteURL)) {
+    alert('Remote URL must start with https://, http://, git@, or ssh://');
+    return;
+  }
+
   if (btn) btn.disabled = true;
   try {
     await apiFetch('/setup', {
@@ -149,7 +161,9 @@ async function viewCategories() {
   const cats = data.categories || [];
   let h = `<div class="view-header"><h1>Categories</h1></div>`;
   if (!cats.length) {
-    h += '<p class="empty">No categories yet.</p>';
+    h += STATUS.is_admin
+      ? '<p class="empty">No categories yet. Use <strong>Admin › New Category</strong> in the sidebar to create one.</p>'
+      : '<p class="empty">No categories yet.</p>';
   } else {
     h += '<div class="card-list">';
     cats.forEach(c => {
@@ -214,6 +228,15 @@ async function viewThread(catSlug, threadSlug) {
   </nav>`;
 
   posts.forEach((p, i) => {
+    if (p.tombstoned) {
+      h += `<article class="post post-deleted${i === 0 ? ' post-root' : ''}">
+        <header class="post-meta">
+          <span class="author">[deleted]</span>
+        </header>
+        <div class="post-body">${p.body_html}</div>
+      </article>`;
+      return;
+    }
     const deleteBtn = STATUS.is_admin
       ? `<button class="btn btn-danger btn-sm" onclick="adminDelete('${esc(catSlug)}','${esc(threadSlug)}','${esc(p.filename)}')">Delete</button>`
       : '';
@@ -228,13 +251,17 @@ async function viewThread(catSlug, threadSlug) {
     </article>`;
   });
 
-  h += `<section class="reply-form">
-    <h3>Post a Reply</h3>
-    <textarea id="reply-body" rows="6" placeholder="Your reply (Markdown supported)…"></textarea>
-    <div class="form-actions">
-      <button class="btn btn-primary" onclick="submitReply('${esc(catSlug)}','${esc(threadSlug)}')">Submit Reply</button>
-    </div>
-  </section>`;
+  h += STATUS.username
+    ? `<section class="reply-form">
+        <h3>Post a Reply</h3>
+        <textarea id="reply-body" rows="6" placeholder="Your reply (Markdown supported)…"></textarea>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="submitReply('${esc(catSlug)}','${esc(threadSlug)}')">Submit Reply</button>
+        </div>
+      </section>`
+    : `<section class="reply-form">
+        <p class="empty">No identity configured. Run <code>gitorum keygen</code> to enable posting.</p>
+      </section>`;
 
   render(h);
 }
@@ -248,11 +275,14 @@ function viewNewThread(catSlug) {
     </nav>
     <h1 style="margin-bottom:1.25rem">New Thread</h1>
     <form class="new-thread-form" onsubmit="submitNewThread(event,'${esc(catSlug)}')">
+      <label>Title
+        <input type="text" id="nt-title" required placeholder="Thread title">
+      </label>
       <label>Thread slug <small style="font-weight:400">(lowercase letters, numbers, hyphens)</small>
         <input type="text" id="nt-slug" pattern="[a-z0-9-]+" required placeholder="my-first-thread">
       </label>
       <label>Body <small style="font-weight:400">(Markdown supported)</small>
-        <textarea id="nt-body" rows="10" required placeholder="# Thread Title&#10;&#10;Write your post here…"></textarea>
+        <textarea id="nt-body" rows="10" placeholder="Write your post here…"></textarea>
       </label>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Create Thread</button>
@@ -286,8 +316,10 @@ async function submitReply(catSlug, threadSlug) {
 
 async function submitNewThread(e, catSlug) {
   e.preventDefault();
-  const slug = $('nt-slug').value.trim();
-  const body = $('nt-body').value.trim();
+  const title   = $('nt-title').value.trim();
+  const slug    = $('nt-slug').value.trim();
+  const bodyRaw = $('nt-body').value.trim();
+  const body    = title ? `# ${title}\n\n${bodyRaw}` : bodyRaw;
   if (!slug || !body) return;
 
   try {
@@ -327,6 +359,43 @@ function showAdminAddKey() {
       <button class="btn btn-primary" onclick="submitAddKey()">Add Key</button>
       <button class="btn" onclick="closeModal()">Cancel</button>
     </div>`);
+}
+
+function showAdminCreateCategory() {
+  openModal(`
+    <h2>New Category</h2>
+    <label>Slug <small style="font-weight:400">(lowercase letters, numbers, hyphens)</small>
+      <input type="text" id="nc-slug" placeholder="my-category">
+    </label>
+    <label>Name
+      <input type="text" id="nc-name" placeholder="My Category">
+    </label>
+    <label>Description <small style="font-weight:400">(optional)</small>
+      <input type="text" id="nc-desc" placeholder="What this category is about…">
+    </label>
+    <div class="form-actions">
+      <button class="btn btn-primary" onclick="submitCreateCategory()">Create</button>
+      <button class="btn" onclick="closeModal()">Cancel</button>
+    </div>`);
+}
+
+async function submitCreateCategory() {
+  const slug        = $('nc-slug').value.trim();
+  const name        = $('nc-name').value.trim();
+  const description = $('nc-desc').value.trim();
+  if (!slug || !name) { alert('Slug and name are required.'); return; }
+  try {
+    await apiFetch('/categories', {
+      method: 'POST',
+      body:   JSON.stringify({ slug, name, description }),
+    });
+    closeModal();
+    await refreshStatus();
+    location.hash = `#/cat/${slug}`;
+    route();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
 }
 
 async function submitAddKey() {

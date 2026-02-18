@@ -37,8 +37,16 @@ func LoadThread(category, slug, dir, keysDir string) (*Thread, error) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
 			continue
 		}
-		// Skip tombstoned posts.
+		// If a tombstone file exists, include a placeholder so the thread
+		// still shows where the post was (like "[deleted]") without revealing
+		// the original content.
 		if _, err := os.Stat(filepath.Join(dir, TombstoneFilename(name))); err == nil {
+			ts, _ := parseFilenameTime(name)
+			t.Posts = append(t.Posts, &Post{
+				Filename:   name,
+				Timestamp:  ts,
+				Tombstoned: true,
+			})
 			continue
 		}
 		content, err := os.ReadFile(filepath.Join(dir, name))

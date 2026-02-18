@@ -559,12 +559,15 @@ func TestHandleAdminDelete(t *testing.T) {
 		t.Errorf("tombstone file missing: %v", err)
 	}
 
-	// Thread should now have only 1 post (root).
+	// Thread should now have 2 entries: root + [deleted] placeholder.
 	w3 := hit(t, srv, "GET", "/api/threads/general/hello-world")
 	var thread2 api.ThreadResponse
 	decodeJSON(t, w3, &thread2)
-	if len(thread2.Posts) != 1 {
-		t.Errorf("Posts after delete: got %d, want 1", len(thread2.Posts))
+	if len(thread2.Posts) != 2 {
+		t.Errorf("Posts after delete: got %d, want 2 (root + deleted placeholder)", len(thread2.Posts))
+	}
+	if !thread2.Posts[1].Tombstoned {
+		t.Error("second post should be marked tombstoned")
 	}
 }
 
@@ -620,5 +623,68 @@ func TestHandleAdminAddKey_NotAdmin(t *testing.T) {
 	w := hitJSON(t, srv, "POST", "/api/admin/addkey", body)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+// ---- create category -------------------------------------------------------
+
+func TestHandleCreateCategory(t *testing.T) {
+	srv := setupForum(t)
+	body := map[string]string{"slug": "tech", "name": "Technology", "description": "Tech discussion"}
+	w := hitJSON(t, srv, "POST", "/api/categories", body)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var ok api.OKResponse
+	decodeJSON(t, w, &ok)
+	if !ok.OK {
+		t.Error("ok: got false")
+	}
+
+	// Verify category appears in list.
+	w2 := hit(t, srv, "GET", "/api/categories")
+	var cats api.CategoriesResponse
+	decodeJSON(t, w2, &cats)
+
+	found := false
+	for _, c := range cats.Categories {
+		if c.Slug == "tech" {
+			found = true
+			if c.Name != "Technology" {
+				t.Errorf("Name: got %q", c.Name)
+			}
+		}
+	}
+	if !found {
+		t.Error("new category not found in category list")
+	}
+}
+
+func TestHandleCreateCategory_NotAdmin(t *testing.T) {
+	srv := setupForumAsNonAdmin(t)
+	body := map[string]string{"slug": "tech", "name": "Tech"}
+	w := hitJSON(t, srv, "POST", "/api/categories", body)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleCreateCategory_DuplicateSlug(t *testing.T) {
+	srv := setupForum(t) // "general" already exists on disk
+	body := map[string]string{"slug": "general", "name": "General 2"}
+	w := hitJSON(t, srv, "POST", "/api/categories", body)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", w.Code)
+	}
+}
+
+func TestHandleCreateCategory_InvalidSlug(t *testing.T) {
+	srv := setupForum(t)
+	for _, slug := range []string{"", "Has Spaces", "UPPER", "../evil", "-leading"} {
+		body := map[string]string{"slug": slug, "name": "Test"}
+		w := hitJSON(t, srv, "POST", "/api/categories", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("slug %q: expected 400, got %d", slug, w.Code)
+		}
 	}
 }
