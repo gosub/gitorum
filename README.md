@@ -4,6 +4,37 @@ A decentralized forum where all content is stored as signed files in a git
 repository and distributed via standard git transports (HTTP, SSH, email
 patches).
 
+## Philosophy
+
+Most forum software is a centralized service: one operator runs a database, sets
+the rules, and controls who can speak. Users have no copy of the data and no
+recourse if the service changes, paywalls, or disappears.
+
+Gitorum is built on the opposite premise: the data belongs to the participants,
+not the platform. Every post is a signed file in a plain git repository. The
+repository can live on any machine, be replicated with any git hosting service,
+and be mirrored by any participant. No account to create on a third-party site,
+no vendor lock-in, no API terms of service.
+
+The core design decisions follow from this premise:
+
+- **Append-only by default.** Posts are new files; nothing is edited in place.
+  The git log is the audit trail, and history rewriting is as visible as it is
+  in any git repository.
+- **Cryptographic authorship, not identity gatekeeping.** Anyone can write a
+  post claiming any username. What matters is whether the post is signed with a
+  key that the community trusts — the same model email and PGP have used for
+  decades.
+- **No runtime dependencies.** A single binary, a browser, and a git remote is
+  all you need. There is no database process, no message queue, no container
+  orchestrator.
+- **Offline-first.** The local server works with no network access. Syncing is
+  an explicit act, not a background service, so participants remain in control
+  of when and where they share.
+- **Legible storage.** The repository is readable without the Gitorum binary.
+  Any text editor, `git log`, or language that can parse TOML can read the
+  posts. The software can be replaced; the data cannot be held hostage by it.
+
 ## How it works
 
 The binary starts a local HTTP server that serves a single-page web UI and a
