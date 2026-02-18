@@ -31,6 +31,7 @@ func New(port int, repoPath string, r *repo.Repo, id *crypto.Identity) *Server {
 func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("POST /api/setup", s.handleSetup)
 	mux.HandleFunc("GET /api/sync", s.handleSync)
 	mux.HandleFunc("GET /api/categories", s.handleCategories)
 	mux.HandleFunc("GET /api/categories/{cat}/threads", s.handleThreads)

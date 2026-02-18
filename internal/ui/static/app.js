@@ -79,6 +79,8 @@ function flash(color) {
 
 // ── Router ───────────────────────────────────────────────────────────────────
 function route() {
+  if (!STATUS.initialized) return viewSetup();
+
   const hash  = location.hash.replace(/^#\/?/, '');
   const parts = hash ? hash.split('/') : [];
 
@@ -91,6 +93,52 @@ function route() {
 }
 
 // ── Views ────────────────────────────────────────────────────────────────────
+function viewSetup() {
+  render(`
+    <div class="setup-wizard">
+      <div class="view-header"><h1>Welcome to Gitorum</h1></div>
+      <p class="setup-intro">Your forum is not set up yet. Fill in the details below to get started.</p>
+      <form class="setup-form" onsubmit="submitSetup(event)">
+        <label>Your username
+          <input type="text" id="setup-username" required
+            value="${esc(STATUS.username || '')}"
+            placeholder="alice"
+            ${STATUS.username ? 'readonly' : ''}>
+        </label>
+        <label>Forum name
+          <input type="text" id="setup-forum-name" required placeholder="My Forum">
+        </label>
+        <label>Remote git URL <small style="font-weight:400">(optional — for syncing with others)</small>
+          <input type="text" id="setup-remote" placeholder="https://github.com/you/forum.git">
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Initialize Forum</button>
+        </div>
+      </form>
+    </div>`);
+}
+
+async function submitSetup(e) {
+  e.preventDefault();
+  const username  = $('setup-username').value.trim();
+  const forumName = $('setup-forum-name').value.trim();
+  const remoteURL = $('setup-remote').value.trim();
+  const btn = e.target.querySelector('[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    await apiFetch('/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username, forum_name: forumName, remote_url: remoteURL }),
+    });
+    await refreshStatus();
+    location.hash = '';
+    route();
+  } catch (err) {
+    alert('Setup failed: ' + err.message);
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function viewCategories() {
   const data = await apiFetch('/categories').catch(e => {
     render(`<p class="error-msg">Could not load categories: ${esc(e.message)}</p>`);

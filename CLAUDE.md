@@ -77,4 +77,4 @@ Tombstone files: `{original_filename}.tomb` — signed by admin key only.
 | 6 | done | Post submission — write, sign, commit, push |
 | 7 | done | Sync — pull --rebase, conflict handling |
 | 8 | done | Admin — tombstones, key management |
-| 9 | next | Setup wizard — first-run config page |
+| 9 | done | Setup wizard — first-run config page |

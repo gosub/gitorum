@@ -127,6 +127,9 @@ func TestHandleStatus(t *testing.T) {
 	if resp.ForumName != "Test Forum" {
 		t.Errorf("ForumName: got %q", resp.ForumName)
 	}
+	if !resp.Initialized {
+		t.Error("Initialized: expected true")
+	}
 }
 
 func TestHandleStatus_NoRepo(t *testing.T) {
@@ -139,6 +142,9 @@ func TestHandleStatus_NoRepo(t *testing.T) {
 	decodeJSON(t, w, &resp)
 	if resp.IsAdmin {
 		t.Error("IsAdmin should be false with no repo/identity")
+	}
+	if resp.Initialized {
+		t.Error("Initialized should be false with no repo")
 	}
 }
 
@@ -282,6 +288,68 @@ func TestHandleSync_NoRemote(t *testing.T) {
 	decodeJSON(t, w, &ok)
 	if !ok.OK {
 		t.Error("ok: expected true")
+	}
+}
+
+// ---- setup -----------------------------------------------------------------
+
+func TestHandleSetup(t *testing.T) {
+	dir := t.TempDir()
+	id, err := crypto.Generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Server has identity but no repo — the typical "keygen done, init not yet" state.
+	srv := api.New(8080, dir, nil, id)
+
+	body := map[string]string{"username": "alice", "forum_name": "Test Forum"}
+	w := hitJSON(t, srv, "POST", "/api/setup", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// Status must now report initialized.
+	w2 := hit(t, srv, "GET", "/api/status")
+	var st api.StatusResponse
+	decodeJSON(t, w2, &st)
+	if !st.Initialized {
+		t.Error("Initialized: expected true after setup")
+	}
+	if st.ForumName != "Test Forum" {
+		t.Errorf("ForumName: got %q", st.ForumName)
+	}
+	if st.Username != "alice" {
+		t.Errorf("Username: got %q", st.Username)
+	}
+
+	// GITORUM.toml must exist on disk.
+	if _, err := os.Stat(filepath.Join(dir, "GITORUM.toml")); err != nil {
+		t.Errorf("GITORUM.toml missing after setup: %v", err)
+	}
+}
+
+func TestHandleSetup_AlreadyInitialized(t *testing.T) {
+	srv := setupForum(t)
+	body := map[string]string{"username": "alice", "forum_name": "New Forum"}
+	w := hitJSON(t, srv, "POST", "/api/setup", body)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", w.Code)
+	}
+}
+
+func TestHandleSetup_MissingFields(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := crypto.Generate("alice")
+	srv := api.New(8080, dir, nil, id)
+
+	for _, body := range []map[string]string{
+		{"username": "", "forum_name": "Forum"},
+		{"username": "alice", "forum_name": ""},
+	} {
+		w := hitJSON(t, srv, "POST", "/api/setup", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body %v: expected 400, got %d", body, w.Code)
+		}
 	}
 }
 

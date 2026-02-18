@@ -49,12 +49,19 @@ type PostResponse struct {
 }
 
 type StatusResponse struct {
+	Username    string `json:"username"`
+	PubKey      string `json:"pubkey"`
+	IsAdmin     bool   `json:"is_admin"`
+	ForumName   string `json:"forum_name"`
+	RemoteURL   string `json:"remote_url,omitempty"`
+	Synced      bool   `json:"synced"`
+	Initialized bool   `json:"initialized"` // false until forum repo exists
+}
+
+type SetupRequest struct {
 	Username  string `json:"username"`
-	PubKey    string `json:"pubkey"`
-	IsAdmin   bool   `json:"is_admin"`
 	ForumName string `json:"forum_name"`
-	RemoteURL string `json:"remote_url,omitempty"`
-	Synced    bool   `json:"synced"`
+	RemoteURL string `json:"remote_url"`
 }
 
 // ---- request types ---------------------------------------------------------

@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/forum"
+	"github.com/gosub/gitorum/internal/repo"
 )
 
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -22,6 +24,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.repo != nil {
+		resp.Initialized = true
 		if meta, err := s.repo.ReadMeta(); err == nil {
 			resp.ForumName = meta.Name
 			if s.identity != nil {
@@ -35,6 +38,66 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// POST /api/setup
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if s.repo != nil {
+		apiError(w, http.StatusConflict, "forum is already initialized")
+		return
+	}
+
+	var req SetupRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Username == "" {
+		apiError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	if req.ForumName == "" {
+		apiError(w, http.StatusBadRequest, "forum_name is required")
+		return
+	}
+
+	// Reuse existing identity or generate a new one.
+	id := s.identity
+	if id == nil {
+		generated, err := crypto.Generate(req.Username)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "generate identity: "+err.Error())
+			return
+		}
+		identPath := crypto.DefaultIdentityPath()
+		if err := generated.Save(identPath); err != nil {
+			apiError(w, http.StatusInternalServerError, "save identity: "+err.Error())
+			return
+		}
+		id = generated
+	}
+
+	meta := repo.ForumMeta{
+		Name:        req.ForumName,
+		AdminPubkey: id.PublicKey,
+	}
+	newRepo, err := repo.Init(s.RepoPath, meta, id)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "init repo: "+err.Error())
+		return
+	}
+
+	if req.RemoteURL != "" {
+		if err := newRepo.AddRemote("origin", req.RemoteURL); err != nil {
+			log.Printf("handleSetup: add remote: %v", err)
+		} else if err := newRepo.Push(); err != nil {
+			log.Printf("handleSetup: push: %v", err)
+		}
+	}
+
+	s.identity = id
+	s.repo = newRepo
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
 }
 
 // GET /api/sync

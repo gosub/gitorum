@@ -184,6 +184,14 @@ input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow:
 .btn-danger:hover { background: #ffd7d5; }
 .btn-sm { padding: .2rem .5rem; font-size: .75rem; }
 
+/* ── Setup wizard ──────────────────────────────────────────────────────────── */
+.setup-wizard { max-width: 520px; }
+.setup-intro  { color: var(--muted); margin-bottom: 1.5rem; }
+.setup-form {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1.25rem 1.5rem;
+}
+
 /* ── Modal ─────────────────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.45);
