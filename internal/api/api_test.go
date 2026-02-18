@@ -424,3 +424,133 @@ func TestHandleNewThread_InvalidCategory(t *testing.T) {
 		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
+
+// ---- admin -----------------------------------------------------------------
+
+// setupForumAsNonAdmin creates a forum owned by alice but returns a server
+// running as bob (a non-admin identity).
+func setupForumAsNonAdmin(t *testing.T) *api.Server {
+	t.Helper()
+	dir := t.TempDir()
+
+	admin, err := crypto.Generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := crypto.Generate("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := repo.Init(dir, repo.ForumMeta{
+		Name:        "Test Forum",
+		Description: "A test forum",
+		AdminPubkey: admin.PublicKey,
+	}, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create category and thread so we have something to delete.
+	catDir := filepath.Join(dir, "general")
+	if err := os.MkdirAll(catDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(catDir, "META.toml"),
+		[]byte("name = \"General\"\ndescription = \"\"\n"), 0o644)
+
+	return api.New(8080, dir, r, bob)
+}
+
+func TestHandleAdminDelete(t *testing.T) {
+	srv := setupForum(t)
+	// The reply post from setupForum lives at general/hello-world/<filename>.
+	// Fetch the thread to find its filename.
+	w := hit(t, srv, "GET", "/api/threads/general/hello-world")
+	var thread api.ThreadResponse
+	decodeJSON(t, w, &thread)
+	if len(thread.Posts) < 2 {
+		t.Fatalf("expected at least 2 posts, got %d", len(thread.Posts))
+	}
+	replyFilename := thread.Posts[1].Filename
+
+	body := map[string]string{
+		"category": "general",
+		"thread":   "hello-world",
+		"filename": replyFilename,
+	}
+	w2 := hitJSON(t, srv, "POST", "/api/admin/delete", body)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w2.Code, w2.Body.String())
+	}
+
+	// Tombstone file must exist on disk.
+	tombPath := filepath.Join(srv.RepoPath, "general", "hello-world",
+		forum.TombstoneFilename(replyFilename))
+	if _, err := os.Stat(tombPath); err != nil {
+		t.Errorf("tombstone file missing: %v", err)
+	}
+
+	// Thread should now have only 1 post (root).
+	w3 := hit(t, srv, "GET", "/api/threads/general/hello-world")
+	var thread2 api.ThreadResponse
+	decodeJSON(t, w3, &thread2)
+	if len(thread2.Posts) != 1 {
+		t.Errorf("Posts after delete: got %d, want 1", len(thread2.Posts))
+	}
+}
+
+func TestHandleAdminDelete_NotAdmin(t *testing.T) {
+	srv := setupForumAsNonAdmin(t)
+	body := map[string]string{"category": "general", "thread": "t", "filename": "0000_root.md"}
+	w := hitJSON(t, srv, "POST", "/api/admin/delete", body)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleAdminDelete_PostNotFound(t *testing.T) {
+	srv := setupForum(t)
+	body := map[string]string{
+		"category": "general",
+		"thread":   "hello-world",
+		"filename": "no-such-post.md",
+	}
+	w := hitJSON(t, srv, "POST", "/api/admin/delete", body)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleAdminAddKey(t *testing.T) {
+	srv := setupForum(t)
+	bobID, err := crypto.Generate("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := map[string]string{"username": "bob", "pubkey": bobID.PublicKey}
+	w := hitJSON(t, srv, "POST", "/api/admin/addkey", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// Key file must exist on disk and contain the public key.
+	keyPath := filepath.Join(srv.RepoPath, "keys", "bob.pub")
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("bob.pub missing: %v", err)
+	}
+	if !strings.Contains(string(data), bobID.PublicKey) {
+		t.Errorf("bob.pub does not contain the expected public key")
+	}
+}
+
+func TestHandleAdminAddKey_NotAdmin(t *testing.T) {
+	srv := setupForumAsNonAdmin(t)
+	body := map[string]string{"username": "bob", "pubkey": "AAAA"}
+	w := hitJSON(t, srv, "POST", "/api/admin/addkey", body)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}

@@ -179,6 +179,19 @@ func SignPost(id *crypto.Identity, parent, body string) (*Post, error) {
 	}, nil
 }
 
+// TombstoneFilename returns the tombstone filename for a given post filename.
+// e.g. "0000_root.md" → "0000_root.md.tomb"
+func TombstoneFilename(postFilename string) string {
+	return postFilename + ".tomb"
+}
+
+// SignTombstone creates a tombstone post signed by adminID.
+// targetContent is the raw file bytes of the post being deleted; its hash is
+// stored in the tombstone's parent field to create a cryptographic link.
+func SignTombstone(adminID *crypto.Identity, targetContent []byte) (*Post, error) {
+	return SignPost(adminID, PostHash(targetContent), "")
+}
+
 // ---- internal ----
 
 // parseFrontMatter splits content into the TOML front matter and body.

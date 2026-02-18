@@ -264,8 +264,37 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// TODO(step8): verify admin, write tombstone, commit, push.
-	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "tombstone not yet implemented (step 8)"})
+	if req.Category == "" || req.Thread == "" || req.Filename == "" {
+		apiError(w, http.StatusBadRequest, "category, thread, and filename are required")
+		return
+	}
+	if !s.requireAdmin(w) {
+		return
+	}
+
+	postPath := filepath.Join(s.repo.Path, req.Category, req.Thread, req.Filename)
+	content, err := os.ReadFile(postPath)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "post not found")
+		return
+	}
+
+	tomb, err := forum.SignTombstone(s.identity, content)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "sign tombstone: "+err.Error())
+		return
+	}
+	tomb.Filename = forum.TombstoneFilename(req.Filename)
+
+	relPath := filepath.Join(req.Category, req.Thread, tomb.Filename)
+	if err := s.repo.CommitPost(s.identity, relPath, tomb.Format()); err != nil {
+		apiError(w, http.StatusInternalServerError, "commit tombstone: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleAdminDelete: push: %v", err)
+	}
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
 }
 
 // POST /api/admin/addkey
@@ -279,6 +308,39 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "username and pubkey are required")
 		return
 	}
-	// TODO(step8): verify admin, write keys/<username>.pub, commit, push.
-	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "addkey not yet implemented (step 8)"})
+	if !s.requireAdmin(w) {
+		return
+	}
+
+	if err := s.repo.WritePublicKey(s.identity, req.Username, req.PubKey); err != nil {
+		apiError(w, http.StatusInternalServerError, "write public key: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleAdminAddKey: push: %v", err)
+	}
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+}
+
+// requireAdmin checks that s.identity is the forum admin. It writes the
+// appropriate error response and returns false when the check fails.
+func (s *Server) requireAdmin(w http.ResponseWriter) bool {
+	if s.identity == nil {
+		apiError(w, http.StatusServiceUnavailable, "no identity configured")
+		return false
+	}
+	if s.repo == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return false
+	}
+	meta, err := s.repo.ReadMeta()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "read meta: "+err.Error())
+		return false
+	}
+	if s.identity.PublicKey != meta.AdminPubkey {
+		apiError(w, http.StatusForbidden, "admin access required")
+		return false
+	}
+	return true
 }

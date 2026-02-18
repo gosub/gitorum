@@ -560,3 +560,102 @@ func TestLoadCategory_EmptyCategory(t *testing.T) {
 		t.Errorf("expected 0 threads, got %v", cat.ThreadSlugs)
 	}
 }
+
+// ---- Tombstone ----
+
+func TestTombstoneFilename(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"0000_root.md", "0000_root.md.tomb"},
+		{"1708123456789_a3f9c1b2.md", "1708123456789_a3f9c1b2.md.tomb"},
+	}
+	for _, tc := range cases {
+		got := forum.TombstoneFilename(tc.in)
+		if got != tc.want {
+			t.Errorf("TombstoneFilename(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSignTombstone_Valid(t *testing.T) {
+	id := mustGenerate(t, "admin")
+	original := []byte("some original post content")
+
+	tomb, err := forum.SignTombstone(id, original)
+	if err != nil {
+		t.Fatalf("SignTombstone: %v", err)
+	}
+	if tomb.Author != "admin" {
+		t.Errorf("Author: got %q", tomb.Author)
+	}
+	if tomb.Body != "" {
+		t.Errorf("Body: expected empty, got %q", tomb.Body)
+	}
+	if tomb.Parent != forum.PostHash(original) {
+		t.Errorf("Parent: got %q, want hash of original", tomb.Parent)
+	}
+}
+
+func TestLoadThread_SkipsTombstoned(t *testing.T) {
+	id := mustGenerate(t, "alice")
+	dir := t.TempDir()
+	keysDir := filepath.Join(dir, "keys")
+	threadDir := filepath.Join(dir, "thread")
+
+	writeKey(t, keysDir, "alice", id.PublicKey)
+	rootContent := signedPost(t, threadDir, forum.RootFilename, id, "", "Root post")
+
+	// Add two replies.
+	time.Sleep(2 * time.Millisecond)
+	reply1Name := forum.NewPostFilename("Reply one")
+	signedPost(t, threadDir, reply1Name, id, forum.PostHash(rootContent), "Reply one")
+	time.Sleep(2 * time.Millisecond)
+	reply2Content := signedPost(t, threadDir, forum.NewPostFilename("Reply two"), id, forum.PostHash(rootContent), "Reply two")
+	reply2Name := forum.NewPostFilename("Reply two")
+
+	// Tombstone reply 2.
+	tomb, _ := forum.SignTombstone(id, reply2Content)
+	tomb.Filename = forum.TombstoneFilename(reply2Name)
+	tombContent := tomb.Format()
+	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tombContent, 0o644)
+
+	thread, err := forum.LoadThread("cat", "slug", threadDir, keysDir)
+	if err != nil {
+		t.Fatalf("LoadThread: %v", err)
+	}
+	// Root + reply1 only; reply2 is tombstoned.
+	if len(thread.Posts) != 2 {
+		t.Errorf("Posts: got %d, want 2 (tombstoned post excluded)", len(thread.Posts))
+	}
+	for _, p := range thread.Posts {
+		if p.Body == "Reply two" {
+			t.Error("tombstoned post should not appear in thread")
+		}
+	}
+}
+
+func TestScanThread_TombstonedReplyNotCounted(t *testing.T) {
+	id := mustGenerate(t, "alice")
+	dir := t.TempDir()
+	keysDir := filepath.Join(dir, "keys")
+	threadDir := filepath.Join(dir, "thread")
+
+	writeKey(t, keysDir, "alice", id.PublicKey)
+	rootContent := signedPost(t, threadDir, forum.RootFilename, id, "", "Root")
+
+	time.Sleep(2 * time.Millisecond)
+	replyName := forum.NewPostFilename("A reply")
+	replyContent := signedPost(t, threadDir, replyName, id, forum.PostHash(rootContent), "A reply")
+
+	// Tombstone the reply.
+	tomb, _ := forum.SignTombstone(id, replyContent)
+	tomb.Filename = forum.TombstoneFilename(replyName)
+	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tomb.Format(), 0o644)
+
+	scan, err := forum.ScanThread("slug", threadDir, keysDir)
+	if err != nil {
+		t.Fatalf("ScanThread: %v", err)
+	}
+	if scan.ReplyCount != 0 {
+		t.Errorf("ReplyCount: got %d, want 0 (tombstoned reply excluded)", scan.ReplyCount)
+	}
+}

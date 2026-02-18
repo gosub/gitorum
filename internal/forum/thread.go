@@ -37,6 +37,10 @@ func LoadThread(category, slug, dir, keysDir string) (*Thread, error) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
 			continue
 		}
+		// Skip tombstoned posts.
+		if _, err := os.Stat(filepath.Join(dir, TombstoneFilename(name))); err == nil {
+			continue
+		}
 		content, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", name, err)

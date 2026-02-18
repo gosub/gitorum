@@ -44,6 +44,10 @@ func ScanThread(slug, dir, keysDir string) (*ThreadScan, error) {
 		if e.IsDir() || !strings.HasSuffix(name, ".md") || name == RootFilename {
 			continue
 		}
+		// Skip tombstoned replies.
+		if _, err := os.Stat(filepath.Join(dir, TombstoneFilename(name))); err == nil {
+			continue
+		}
 		replyCount++
 		if ts, ok := parseFilenameTime(name); ok {
 			lastAt = ts.UTC().Format(time.RFC3339)
