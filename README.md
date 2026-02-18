@@ -90,39 +90,113 @@ Requires Go 1.22 or later.
 go build -o gitorum .
 ```
 
-## Usage
+## Command line usage
 
-### Generate an identity
-
-```sh
-gitorum keygen --username alice
-```
-
-Writes an Ed25519 keypair to `~/.config/gitorum/identity.toml` (mode 0600).
-Use `--output` to override the path and `--force` to overwrite an existing key.
-
-### Initialize a forum repository
+### `gitorum keygen`
 
 ```sh
-gitorum init --name "My Forum" --username alice [--description "..."] [--dir .] [--remote <url>]
+gitorum keygen --username alice [--output ~/.config/gitorum/identity.toml] [--force]
 ```
 
-Creates `GITORUM.toml`, `keys/alice.pub`, and the first git commit.
-Pass `--remote` to configure an `origin` remote for syncing.
+Generates an Ed25519 keypair and writes it to
+`~/.config/gitorum/identity.toml` (mode 0600, respects `$XDG_CONFIG_HOME`).
+Use `--output` to specify an alternative path and `--force` to overwrite an
+existing file.
 
-### Start the server
+### `gitorum init`
 
 ```sh
-gitorum serve [--port 8080] [--repo .]
+gitorum init --name "My Forum" [--description "..."] [--username alice] [--dir .] [--remote <url>]
 ```
 
-Opens `http://localhost:8080` in your browser.  The web UI provides:
+Creates a new forum repository in the current directory (or `--dir`):
+writes `GITORUM.toml` and `keys/<username>.pub`, and makes the first git
+commit. Pass `--remote` to configure an `origin` remote immediately.
+
+### `gitorum serve`
+
+```sh
+gitorum serve [--port 8080] [--repo .] [--identity ~/.config/gitorum/identity.toml]
+```
+
+Starts the local HTTP server. Open `http://localhost:8080` in your browser.
+The web UI provides:
 
 - Category and thread browsing
 - Thread view with rendered Markdown and per-post signature badges
 - Reply and new-thread forms
 - Admin panel (visible only when the local key matches the forum admin key)
   for adding user keys and tombstoning posts
+
+If the forum has not been initialized yet, the browser will show a setup
+wizard instead of the forum.
+
+## Mini tutorial
+
+The following shows how to start a fresh forum and invite a second
+participant to join.
+
+**1. Build the binary**
+
+```sh
+make
+```
+
+**2. Create your identity**
+
+```sh
+./build/gitorum keygen --username alice
+```
+
+This writes your keypair to `~/.config/gitorum/identity.toml`. Keep the
+private key private; share the public key freely.
+
+**3. Create an empty git repository on a host everyone can reach**
+
+Any git hosting service works — GitHub, Codeberg, a bare repo on your own
+server, etc. Create an empty repository and copy its URL.
+
+**4. Initialize the forum**
+
+```sh
+mkdir my-forum && cd my-forum
+../build/gitorum init --name "My Forum" --remote git@github.com:alice/my-forum.git
+```
+
+This commits `GITORUM.toml` and `keys/alice.pub`, then pushes to the remote.
+
+**5. Start the server**
+
+```sh
+../build/gitorum serve --repo .
+```
+
+Open `http://localhost:8080`. You are now the forum admin.
+
+**6. Invite a second participant**
+
+Bob generates his own identity on his machine:
+
+```sh
+gitorum keygen --username bob
+```
+
+Bob sends you his public key (printed by `keygen`, or found in
+`~/.config/gitorum/identity.toml`). In the admin panel in the browser,
+paste Bob's public key under "Add User Key". This commits
+`keys/bob.pub` and pushes it to the remote.
+
+Bob then clones the forum repository and starts his own local server:
+
+```sh
+git clone git@github.com:alice/my-forum.git
+gitorum serve --repo my-forum
+```
+
+Bob can now read, reply, and start threads. His posts are signed with his
+key and will show a "signed" badge for any participant who has his key in
+the `keys/` directory. Both participants sync by clicking the sync button
+in the sidebar (or `GET /api/sync`).
 
 ## Signature verification
 
