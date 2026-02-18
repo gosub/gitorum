@@ -73,8 +73,8 @@ Tombstone files: `{original_filename}.tomb` — signed by admin key only.
 | 2 | done | `internal/repo` — forum init, open, commit, remote |
 | 3 | done | `internal/forum` — parse, sign, verify, thread, category |
 | 4 | done | `internal/api` + `internal/ui` — HTTP server, stub handlers, SPA |
-| 5 | next | Wire repo into API — real reads from git working tree |
-| 6 | | Post submission — write, sign, commit, push |
-| 7 | | Sync — pull --rebase, conflict handling |
+| 5 | done | Wire repo into API — real reads from git working tree |
+| 6 | done | Post submission — write, sign, commit, push |
+| 7 | next | Sync — pull --rebase, conflict handling |
 | 8 | | Admin — tombstones, key management |
 | 9 | | Setup wizard — first-run config page |

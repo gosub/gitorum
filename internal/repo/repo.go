@@ -169,6 +169,47 @@ func (r *Repo) IsSynced() (synced bool, remoteURL string) {
 	return head.Hash() == remoteRef.Hash(), remoteURL
 }
 
+// CommitPost writes content to relPath (relative to the repo root), stages
+// that single file, and creates a commit.
+func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []byte) error {
+	absPath := filepath.Join(r.Path, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return fmt.Errorf("create dirs for %s: %w", relPath, err)
+	}
+	if err := os.WriteFile(absPath, content, 0o644); err != nil {
+		return fmt.Errorf("write post file: %w", err)
+	}
+	wt, err := r.git.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+	if _, err := wt.Add(relPath); err != nil {
+		return fmt.Errorf("git add %s: %w", relPath, err)
+	}
+	sig := &object.Signature{
+		Name:  identity.Username,
+		Email: identity.Username + "@gitorum.local",
+		When:  time.Now(),
+	}
+	if _, err := wt.Commit("post: add "+relPath, &gogit.CommitOptions{
+		Author:    sig,
+		Committer: sig,
+	}); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
+
+// Push attempts to push to the origin remote. Returns nil if there is no
+// remote configured or the ref is already up to date.
+func (r *Repo) Push() error {
+	err := r.git.Push(&gogit.PushOptions{RemoteName: "origin"})
+	if err == nil || err == gogit.NoErrAlreadyUpToDate {
+		return nil
+	}
+	return err
+}
+
 // Git returns the underlying go-git repository for advanced callers.
 func (r *Repo) Git() *gogit.Repository { return r.git }
 

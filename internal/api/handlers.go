@@ -3,10 +3,14 @@ package api
 import (
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/gosub/gitorum/internal/forum"
 )
+
+var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // GET /api/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +144,9 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/threads/{cat}/{thread}/reply
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
+	catSlug := r.PathValue("cat")
+	threadSlug := r.PathValue("thread")
+
 	var req ReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -149,8 +156,38 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "body is required")
 		return
 	}
-	// TODO(step6): sign post, write file, git commit, attempt push.
-	writeJSON(w, http.StatusCreated, OKResponse{OK: true, Message: "reply not yet persisted (step 6)"})
+	if s.identity == nil {
+		apiError(w, http.StatusServiceUnavailable, "no identity configured")
+		return
+	}
+	if s.repo == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return
+	}
+
+	rootPath := filepath.Join(s.repo.Path, catSlug, threadSlug, forum.RootFilename)
+	rootContent, err := os.ReadFile(rootPath)
+	if err != nil {
+		apiError(w, http.StatusNotFound, "thread not found")
+		return
+	}
+
+	post, err := forum.SignPost(s.identity, forum.PostHash(rootContent), req.Body)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "sign post: "+err.Error())
+		return
+	}
+	post.Filename = forum.NewPostFilename(post.Body)
+
+	relPath := filepath.Join(catSlug, threadSlug, post.Filename)
+	if err := s.repo.CommitPost(s.identity, relPath, post.Format()); err != nil {
+		apiError(w, http.StatusInternalServerError, "commit post: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleReply: push: %v", err)
+	}
+	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
 }
 
 // POST /api/threads
@@ -164,8 +201,47 @@ func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "category, slug, and body are required")
 		return
 	}
-	// TODO(step6): create thread dir, write 0000_root.md, git commit, push.
-	writeJSON(w, http.StatusCreated, OKResponse{OK: true, Message: "thread not yet persisted (step 6)"})
+	if !slugRe.MatchString(req.Slug) {
+		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
+		return
+	}
+	if s.identity == nil {
+		apiError(w, http.StatusServiceUnavailable, "no identity configured")
+		return
+	}
+	if s.repo == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return
+	}
+
+	catMetaPath := filepath.Join(s.repo.Path, req.Category, "META.toml")
+	if _, err := os.Stat(catMetaPath); err != nil {
+		apiError(w, http.StatusBadRequest, "category not found: "+req.Category)
+		return
+	}
+
+	threadDir := filepath.Join(s.repo.Path, req.Category, req.Slug)
+	if _, err := os.Stat(threadDir); err == nil {
+		apiError(w, http.StatusConflict, "thread slug already exists")
+		return
+	}
+
+	post, err := forum.SignPost(s.identity, "", req.Body)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "sign post: "+err.Error())
+		return
+	}
+	post.Filename = forum.RootFilename
+
+	relPath := filepath.Join(req.Category, req.Slug, forum.RootFilename)
+	if err := s.repo.CommitPost(s.identity, relPath, post.Format()); err != nil {
+		apiError(w, http.StatusInternalServerError, "commit post: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleNewThread: push: %v", err)
+	}
+	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
 }
 
 // POST /api/admin/delete
