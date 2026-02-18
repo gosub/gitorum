@@ -95,6 +95,19 @@ type CreateCategoryRequest struct {
 	Description string `json:"description"`
 }
 
+type JoinRequestsResponse struct {
+	Requests []JoinRequestSummary `json:"requests"`
+}
+
+type JoinRequestSummary struct {
+	Username string `json:"username"`
+	PubKey   string `json:"pubkey"`
+}
+
+type ApproveRejectRequest struct {
+	Username string `json:"username"`
+}
+
 // ---- generic ---------------------------------------------------------------
 
 type OKResponse struct {

@@ -146,12 +146,29 @@ component of the URL with `.git` stripped. After cloning, run
 ### `gitorum config`
 
 ```sh
-gitorum config [--repo .] [--name "New Name"] [--remote <url>]
+gitorum config [--repo .] [--name "New Name"] [--remote <url>] [--auto-approve]
 ```
 
-Without flags, prints the current forum name, admin key, and remote URL.
+Without flags, prints the current forum name, admin key, remote URL, and
+auto-approve setting.
 With `--name`, updates the forum display name (commits the change).
 With `--remote`, sets the `origin` remote URL.
+With `--auto-approve`, enables automatic approval of join requests when the
+admin runs sync.
+
+### `gitorum request`
+
+```sh
+gitorum request [--repo .] [--identity <path>]
+```
+
+Submits a join request to a forum by writing your public key to
+`requests/<username>.pub` in the forum repository and pushing to the remote.
+The forum admin will see a pending request count in their sidebar and can
+approve or reject it from the admin panel.
+
+Your identity must already exist (run `gitorum keygen` first) and you must
+have already cloned the forum repository (run `gitorum clone` first).
 
 ## Mini tutorial
 
@@ -197,28 +214,42 @@ Open `http://localhost:8080`. You are now the forum admin.
 
 **6. Invite a second participant**
 
-Bob generates his own identity on his machine:
+Bob generates his own identity on his machine and clones the forum:
 
 ```sh
 gitorum keygen --username bob
+gitorum clone git@github.com:alice/my-forum.git
 ```
 
-Bob sends you his public key (printed by `keygen`, or found in
-`~/.config/gitorum/identity.toml`). In the admin panel in the browser,
-paste Bob's public key under "Add User Key". This commits
-`keys/bob.pub` and pushes it to the remote.
-
-Bob then clones the forum repository and starts his own local server:
+Bob then submits a join request:
 
 ```sh
-git clone git@github.com:alice/my-forum.git
+gitorum request --repo my-forum
+# Join request submitted for @bob
+# Pushed to remote. The forum admin will see the request on their next sync.
+```
+
+Alice clicks the sync button in the sidebar. The admin panel shows a pending
+count on the "Join Requests" button. Alice clicks it, reviews Bob's public
+key, and clicks Approve. The key is committed to `keys/bob.pub` and pushed.
+
+Alternatively, Alice can enable automatic approval so join requests are
+approved whenever she syncs:
+
+```sh
+gitorum config --repo my-forum --auto-approve
+```
+
+Bob starts his own local server and syncs to pick up the approval:
+
+```sh
 gitorum serve --repo my-forum
+# click sync in the sidebar
 ```
 
 Bob can now read, reply, and start threads. His posts are signed with his
 key and will show a "signed" badge for any participant who has his key in
-the `keys/` directory. Both participants sync by clicking the sync button
-in the sidebar (or `GET /api/sync`).
+the `keys/` directory.
 
 ## Signature verification
 

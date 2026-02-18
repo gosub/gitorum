@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -22,9 +23,16 @@ const gitTimeout = 30 * time.Second
 
 // ForumMeta is the data stored in GITORUM.toml at the repository root.
 type ForumMeta struct {
-	Name        string `toml:"name"`
-	Description string `toml:"description"`
-	AdminPubkey string `toml:"admin_pubkey"`
+	Name            string `toml:"name"`
+	Description     string `toml:"description"`
+	AdminPubkey     string `toml:"admin_pubkey"`
+	AutoApproveKeys bool   `toml:"auto_approve_keys"` // approve join requests automatically on sync
+}
+
+// JoinRequest represents a pending key request stored in requests/<username>.pub.
+type JoinRequest struct {
+	Username string
+	PubKey   string
 }
 
 // Repo wraps a go-git repository and exposes forum-level operations.
@@ -117,6 +125,93 @@ func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 str
 	}
 	return r.commitFiles(identity, fmt.Sprintf("keys: add public key for %s", username),
 		filepath.Join("keys", username+".pub"))
+}
+
+// JoinRequests returns all pending join requests: files in requests/ that do
+// not yet have a corresponding entry in keys/.
+func (r *Repo) JoinRequests() ([]JoinRequest, error) {
+	reqDir := filepath.Join(r.Path, "requests")
+	entries, err := os.ReadDir(reqDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read requests dir: %w", err)
+	}
+
+	var out []JoinRequest
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".pub") {
+			continue
+		}
+		username := strings.TrimSuffix(name, ".pub")
+		// Skip if already approved.
+		if _, err := os.Stat(filepath.Join(r.Path, "keys", name)); err == nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(reqDir, name))
+		if err != nil {
+			continue
+		}
+		out = append(out, JoinRequest{
+			Username: username,
+			PubKey:   strings.TrimSpace(string(data)),
+		})
+	}
+	return out, nil
+}
+
+// SubmitJoinRequest writes requests/<username>.pub with the identity's public
+// key and commits the change. The caller should call Push() to share it.
+func (r *Repo) SubmitJoinRequest(identity *crypto.Identity) error {
+	reqDir := filepath.Join(r.Path, "requests")
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		return fmt.Errorf("create requests dir: %w", err)
+	}
+	relPath := filepath.Join("requests", identity.Username+".pub")
+	absPath := filepath.Join(r.Path, relPath)
+	if err := os.WriteFile(absPath, []byte(identity.PublicKey+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write request file: %w", err)
+	}
+	return r.commitFiles(identity,
+		fmt.Sprintf("request: join request from %s", identity.Username), relPath)
+}
+
+// ApproveJoinRequest moves requests/<username>.pub into keys/ and commits
+// both the addition and the deletion in a single commit.
+func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	reqRelPath := filepath.Join("requests", username+".pub")
+	reqAbsPath := filepath.Join(r.Path, reqRelPath)
+
+	data, err := os.ReadFile(reqAbsPath)
+	if err != nil {
+		return fmt.Errorf("read request file: %w", err)
+	}
+
+	if err := r.writePublicKey(username, strings.TrimSpace(string(data))); err != nil {
+		return err
+	}
+	if err := os.Remove(reqAbsPath); err != nil {
+		return fmt.Errorf("remove request file: %w", err)
+	}
+
+	return r.commitFiles(adminIdentity,
+		fmt.Sprintf("keys: approve join request from %s", username),
+		filepath.Join("keys", username+".pub"),
+		reqRelPath)
+}
+
+// RejectJoinRequest deletes requests/<username>.pub and commits the deletion.
+func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	reqRelPath := filepath.Join("requests", username+".pub")
+	reqAbsPath := filepath.Join(r.Path, reqRelPath)
+
+	if err := os.Remove(reqAbsPath); err != nil {
+		return fmt.Errorf("remove request file: %w", err)
+	}
+	return r.commitFiles(adminIdentity,
+		fmt.Sprintf("request: reject join request from %s", username), reqRelPath)
 }
 
 // CreateCategory creates a new forum category by writing META.toml and

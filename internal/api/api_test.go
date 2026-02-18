@@ -678,6 +678,106 @@ func TestHandleCreateCategory_DuplicateSlug(t *testing.T) {
 	}
 }
 
+// ---- join requests ---------------------------------------------------------
+
+// setupForumWithRequest creates a forum with a pending join request from bob.
+func setupForumWithRequest(t *testing.T) (*api.Server, *crypto.Identity) {
+	t.Helper()
+	srv := setupForum(t)
+
+	bob, err := crypto.Generate("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Open the underlying repo and submit a join request as bob.
+	r, err := repo.Open(srv.RepoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SubmitJoinRequest(bob); err != nil {
+		t.Fatalf("SubmitJoinRequest: %v", err)
+	}
+	return srv, bob
+}
+
+func TestHandleJoinRequests(t *testing.T) {
+	srv, bob := setupForumWithRequest(t)
+
+	w := hit(t, srv, "GET", "/api/admin/requests")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var resp api.JoinRequestsResponse
+	decodeJSON(t, w, &resp)
+
+	if len(resp.Requests) != 1 {
+		t.Fatalf("Requests: got %d, want 1", len(resp.Requests))
+	}
+	if resp.Requests[0].Username != "bob" {
+		t.Errorf("Username: got %q", resp.Requests[0].Username)
+	}
+	if resp.Requests[0].PubKey != bob.PublicKey {
+		t.Error("PubKey mismatch")
+	}
+}
+
+func TestHandleJoinRequests_NotAdmin(t *testing.T) {
+	srv := setupForumAsNonAdmin(t)
+	w := hit(t, srv, "GET", "/api/admin/requests")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleApproveRequest(t *testing.T) {
+	srv, _ := setupForumWithRequest(t)
+
+	body := map[string]string{"username": "bob"}
+	w := hitJSON(t, srv, "POST", "/api/admin/approve", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// keys/bob.pub must now exist on disk.
+	keyPath := filepath.Join(srv.RepoPath, "keys", "bob.pub")
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Errorf("keys/bob.pub missing after approve: %v", err)
+	}
+	// requests/bob.pub must be gone.
+	reqPath := filepath.Join(srv.RepoPath, "requests", "bob.pub")
+	if _, err := os.Stat(reqPath); err == nil {
+		t.Error("requests/bob.pub still exists after approve")
+	}
+
+	// Pending list must now be empty.
+	w2 := hit(t, srv, "GET", "/api/admin/requests")
+	var resp api.JoinRequestsResponse
+	decodeJSON(t, w2, &resp)
+	if len(resp.Requests) != 0 {
+		t.Errorf("expected 0 pending requests after approve, got %d", len(resp.Requests))
+	}
+}
+
+func TestHandleRejectRequest(t *testing.T) {
+	srv, _ := setupForumWithRequest(t)
+
+	body := map[string]string{"username": "bob"}
+	w := hitJSON(t, srv, "POST", "/api/admin/reject", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// requests/bob.pub must be gone.
+	reqPath := filepath.Join(srv.RepoPath, "requests", "bob.pub")
+	if _, err := os.Stat(reqPath); err == nil {
+		t.Error("requests/bob.pub still exists after reject")
+	}
+	// keys/bob.pub must NOT have been created.
+	if _, err := os.Stat(filepath.Join(srv.RepoPath, "keys", "bob.pub")); err == nil {
+		t.Error("keys/bob.pub should not exist after rejection")
+	}
+}
+
 func TestHandleCreateCategory_InvalidSlug(t *testing.T) {
 	srv := setupForum(t)
 	for _, slug := range []string{"", "Has Spaces", "UPPER", "../evil", "-leading"} {

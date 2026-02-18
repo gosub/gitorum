@@ -28,7 +28,7 @@ Go version: 1.23 (net/http path parameters via `r.PathValue`)
 | `internal/repo` | All go-git operations (init, open, commit, push/pull) |
 | `internal/api` | HTTP server, JSON handlers |
 | `internal/ui` | `//go:embed static` — index.html, style.css, app.js |
-| `cmd` | Cobra subcommands: serve, init, keygen |
+| `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request |
 
 ## Post file format
 

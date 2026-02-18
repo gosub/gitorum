@@ -199,6 +199,15 @@ input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow:
   border-radius: 6px; padding: 1.25rem 1.5rem;
 }
 
+/* ── Join request items (inside modal) ─────────────────────────────────────── */
+.join-req-item {
+  margin-bottom: .75rem; padding: .6rem .75rem;
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.join-req-key {
+  font-size: .72rem; word-break: break-all; color: var(--muted); margin-top: .2rem;
+}
+
 /* ── Modal ─────────────────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.45);

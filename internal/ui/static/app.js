@@ -36,6 +36,17 @@ async function refreshStatus() {
   $('identity').textContent   = STATUS.username ? `@${STATUS.username}` : '(anonymous)';
   $('admin-panel').hidden      = !STATUS.is_admin;
 
+  // Fetch pending join requests and update button badge if admin.
+  if (STATUS.is_admin) {
+    const reqs = await apiFetch('/admin/requests').catch(() => ({ requests: [] }));
+    const count = (reqs.requests || []).length;
+    const reqBtn = $('admin-requests-btn');
+    if (reqBtn) {
+      reqBtn.textContent = count > 0 ? `Join Requests (${count})` : 'Join Requests';
+      reqBtn.className   = count > 0 ? 'btn btn-sm btn-primary' : 'btn btn-sm';
+    }
+  }
+
   const dot   = $('sync-dot');
   const label = $('sync-label');
   const lastSyncEl = $('last-sync');
@@ -393,6 +404,57 @@ async function submitCreateCategory() {
     await refreshStatus();
     location.hash = `#/cat/${slug}`;
     route();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function showJoinRequests() {
+  let data;
+  try {
+    data = await apiFetch('/admin/requests');
+  } catch (e) {
+    alert('Error: ' + e.message);
+    return;
+  }
+
+  const requests = data.requests || [];
+  let h = '<h2>Join Requests</h2>';
+
+  if (!requests.length) {
+    h += '<p class="empty" style="margin:.75rem 0">No pending requests.</p>';
+  } else {
+    requests.forEach(req => {
+      h += `<div class="join-req-item">
+        <strong>@${esc(req.username)}</strong>
+        <div class="join-req-key">${esc(req.pubkey)}</div>
+        <div class="form-actions" style="margin-top:.4rem">
+          <button class="btn btn-primary btn-sm" onclick="approveJoinRequest('${esc(req.username)}')">Approve</button>
+          <button class="btn btn-danger btn-sm"  onclick="rejectJoinRequest('${esc(req.username)}')">Reject</button>
+        </div>
+      </div>`;
+    });
+  }
+  h += '<div class="form-actions" style="margin-top:.75rem"><button class="btn" onclick="closeModal()">Close</button></div>';
+  openModal(h);
+}
+
+async function approveJoinRequest(username) {
+  try {
+    await apiFetch('/admin/approve', { method: 'POST', body: JSON.stringify({ username }) });
+    await refreshStatus();
+    await showJoinRequests();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function rejectJoinRequest(username) {
+  if (!confirm(`Reject join request from @${username}?`)) return;
+  try {
+    await apiFetch('/admin/reject', { method: 'POST', body: JSON.stringify({ username }) });
+    await refreshStatus();
+    await showJoinRequests();
   } catch (e) {
     alert('Error: ' + e.message);
   }

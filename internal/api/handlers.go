@@ -132,6 +132,24 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	s.lastSyncAt = time.Now()
 	s.mu.Unlock()
 
+	// Auto-approve join requests if the forum is configured to do so and the
+	// running identity is the admin.
+	if s.identity != nil {
+		if meta, err := s.repo.ReadMeta(); err == nil &&
+			meta.AutoApproveKeys &&
+			s.identity.PublicKey == meta.AdminPubkey {
+			if requests, err := s.repo.JoinRequests(); err == nil {
+				for _, req := range requests {
+					if err := s.repo.ApproveJoinRequest(s.identity, req.Username); err != nil {
+						log.Printf("handleSync: auto-approve %s: %v", req.Username, err)
+					} else {
+						log.Printf("handleSync: auto-approved join request from @%s", req.Username)
+					}
+				}
+			}
+		}
+	}
+
 	if err := s.repo.Push(); err != nil {
 		log.Printf("handleSync: push: %v", err)
 	}
@@ -375,6 +393,74 @@ func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handleNewThread: push: %v", err)
 	}
 	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
+}
+
+// GET /api/admin/requests
+func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w) {
+		return
+	}
+	requests, err := s.repo.JoinRequests()
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "list requests: "+err.Error())
+		return
+	}
+	summaries := make([]JoinRequestSummary, 0, len(requests))
+	for _, req := range requests {
+		summaries = append(summaries, JoinRequestSummary{
+			Username: req.Username,
+			PubKey:   req.PubKey,
+		})
+	}
+	writeJSON(w, http.StatusOK, JoinRequestsResponse{Requests: summaries})
+}
+
+// POST /api/admin/approve
+func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
+	var req ApproveRejectRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Username == "" {
+		apiError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	if !s.requireAdmin(w) {
+		return
+	}
+	if err := s.repo.ApproveJoinRequest(s.identity, req.Username); err != nil {
+		apiError(w, http.StatusInternalServerError, "approve request: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleApproveRequest: push: %v", err)
+	}
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+}
+
+// POST /api/admin/reject
+func (s *Server) handleRejectRequest(w http.ResponseWriter, r *http.Request) {
+	var req ApproveRejectRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Username == "" {
+		apiError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	if !s.requireAdmin(w) {
+		return
+	}
+	if err := s.repo.RejectJoinRequest(s.identity, req.Username); err != nil {
+		apiError(w, http.StatusInternalServerError, "reject request: "+err.Error())
+		return
+	}
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleRejectRequest: push: %v", err)
+	}
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
 }
 
 // POST /api/admin/delete

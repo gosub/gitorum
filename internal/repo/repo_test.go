@@ -352,6 +352,158 @@ func TestRepo_PullPush(t *testing.T) {
 	}
 }
 
+// ---- JoinRequests ----
+
+func TestJoinRequests_Empty(t *testing.T) {
+	id := newIdentity(t, "admin")
+	dir := t.TempDir()
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqs, err := r.JoinRequests()
+	if err != nil {
+		t.Fatalf("JoinRequests: %v", err)
+	}
+	if len(reqs) != 0 {
+		t.Errorf("expected 0 requests, got %d", len(reqs))
+	}
+}
+
+func TestSubmitJoinRequest(t *testing.T) {
+	admin := newIdentity(t, "admin")
+	bob := newIdentity(t, "bob")
+	dir := t.TempDir()
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.SubmitJoinRequest(bob); err != nil {
+		t.Fatalf("SubmitJoinRequest: %v", err)
+	}
+
+	// File must exist on disk.
+	reqPath := filepath.Join(dir, "requests", "bob.pub")
+	data, err := os.ReadFile(reqPath)
+	if err != nil {
+		t.Fatalf("requests/bob.pub missing: %v", err)
+	}
+	if !strings.Contains(string(data), bob.PublicKey) {
+		t.Error("requests/bob.pub does not contain bob's public key")
+	}
+
+	// Must appear in JoinRequests.
+	reqs, err := r.JoinRequests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Username != "bob" {
+		t.Errorf("JoinRequests: got %v", reqs)
+	}
+}
+
+func TestApproveJoinRequest(t *testing.T) {
+	admin := newIdentity(t, "admin")
+	bob := newIdentity(t, "bob")
+	dir := t.TempDir()
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SubmitJoinRequest(bob); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.ApproveJoinRequest(admin, "bob"); err != nil {
+		t.Fatalf("ApproveJoinRequest: %v", err)
+	}
+
+	// keys/bob.pub must exist.
+	keyPath := filepath.Join(dir, "keys", "bob.pub")
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Errorf("keys/bob.pub missing after approve: %v", err)
+	}
+
+	// requests/bob.pub must be gone.
+	reqPath := filepath.Join(dir, "requests", "bob.pub")
+	if _, err := os.Stat(reqPath); err == nil {
+		t.Error("requests/bob.pub still exists after approve")
+	}
+
+	// Must no longer appear in JoinRequests.
+	reqs, _ := r.JoinRequests()
+	for _, req := range reqs {
+		if req.Username == "bob" {
+			t.Error("bob still appears in JoinRequests after approval")
+		}
+	}
+}
+
+func TestRejectJoinRequest(t *testing.T) {
+	admin := newIdentity(t, "admin")
+	bob := newIdentity(t, "bob")
+	dir := t.TempDir()
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SubmitJoinRequest(bob); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RejectJoinRequest(admin, "bob"); err != nil {
+		t.Fatalf("RejectJoinRequest: %v", err)
+	}
+
+	// requests/bob.pub must be gone.
+	reqPath := filepath.Join(dir, "requests", "bob.pub")
+	if _, err := os.Stat(reqPath); err == nil {
+		t.Error("requests/bob.pub still exists after rejection")
+	}
+	// keys/bob.pub must NOT have been created.
+	if _, err := os.Stat(filepath.Join(dir, "keys", "bob.pub")); err == nil {
+		t.Error("keys/bob.pub should not exist after rejection")
+	}
+}
+
+func TestJoinRequests_SkipsApproved(t *testing.T) {
+	admin := newIdentity(t, "admin")
+	bob := newIdentity(t, "bob")
+	dir := t.TempDir()
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SubmitJoinRequest(bob); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ApproveJoinRequest(admin, "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now add another request and approve it too, to ensure the count is right.
+	charlie := newIdentity(t, "charlie")
+	if err := r.SubmitJoinRequest(charlie); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only charlie should appear (bob is approved).
+	reqs, err := r.JoinRequests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Username != "charlie" {
+		t.Errorf("JoinRequests: expected only charlie, got %v", reqs)
+	}
+}
+
 // ---- helper ----
 
 func checkFile(t *testing.T, path string) {
