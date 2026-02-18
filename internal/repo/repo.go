@@ -200,10 +200,51 @@ func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []b
 	return nil
 }
 
+// Pull fetches from origin and fast-forward merges into the current branch.
+// Returns nil when there is no remote configured or the ref is already up to
+// date. Merge conflicts are returned as errors.
+func (r *Repo) Pull() error {
+	cfg, err := r.git.Config()
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Remotes["origin"]; !ok {
+		return nil
+	}
+
+	head, err := r.git.Head()
+	if err != nil {
+		return fmt.Errorf("head: %w", err)
+	}
+
+	wt, err := r.git.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+
+	err = wt.Pull(&gogit.PullOptions{
+		RemoteName:    "origin",
+		ReferenceName: head.Name(),
+		Force:         false,
+	})
+	if err == gogit.NoErrAlreadyUpToDate {
+		return nil
+	}
+	return err
+}
+
 // Push attempts to push to the origin remote. Returns nil if there is no
 // remote configured or the ref is already up to date.
 func (r *Repo) Push() error {
-	err := r.git.Push(&gogit.PushOptions{RemoteName: "origin"})
+	cfg, err := r.git.Config()
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Remotes["origin"]; !ok {
+		return nil
+	}
+
+	err = r.git.Push(&gogit.PushOptions{RemoteName: "origin"})
 	if err == nil || err == gogit.NoErrAlreadyUpToDate {
 		return nil
 	}

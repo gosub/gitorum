@@ -39,8 +39,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/sync
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	// TODO(step7): pull --rebase then push.
-	writeJSON(w, http.StatusOK, OKResponse{OK: true, Message: "sync not yet implemented"})
+	if s.repo == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return
+	}
+
+	if err := s.repo.Pull(); err != nil {
+		apiError(w, http.StatusInternalServerError, "pull: "+err.Error())
+		return
+	}
+
+	if err := s.repo.Push(); err != nil {
+		log.Printf("handleSync: push: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, OKResponse{OK: true})
 }
 
 // GET /api/categories

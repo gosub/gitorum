@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -278,6 +279,76 @@ func TestWritePublicKey(t *testing.T) {
 	}
 	if !strings.Contains(commits[0].Message, "heidi") {
 		t.Errorf("key commit message: got %q", commits[0].Message)
+	}
+}
+
+// ---- PullPush ----
+
+// TestRepo_PullPush verifies the full sync cycle: push initial state, have
+// another user push a new commit, then pull and verify the new file appears.
+func TestRepo_PullPush(t *testing.T) {
+	id := newIdentity(t, "alice")
+	dir := t.TempDir()
+	bare := newBareRemote(t)
+
+	r, err := repo.Init(dir, repo.ForumMeta{Name: "Forum", AdminPubkey: id.PublicKey}, id)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if err := r.AddRemote("origin", bare); err != nil {
+		t.Fatalf("AddRemote: %v", err)
+	}
+	if err := r.Push(); err != nil {
+		t.Fatalf("initial Push: %v", err)
+	}
+
+	// Bob clones the bare remote, adds a file, and pushes back.
+	bobDir := t.TempDir()
+	bobGr, err := gogit.PlainClone(bobDir, false, &gogit.CloneOptions{URL: bare})
+	if err != nil {
+		t.Fatalf("PlainClone: %v", err)
+	}
+
+	postDir := filepath.Join(bobDir, "general", "bobs-post")
+	if err := os.MkdirAll(postDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(postDir, "0000_root.md"), []byte("hello from bob"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bobWt, err := bobGr.Worktree()
+	if err != nil {
+		t.Fatalf("bob worktree: %v", err)
+	}
+	if err := bobWt.AddGlob("."); err != nil {
+		t.Fatalf("bob add: %v", err)
+	}
+	bobSig := &object.Signature{Name: "bob", Email: "bob@gitorum.local", When: time.Now()}
+	if _, err := bobWt.Commit("post: add bobs-post", &gogit.CommitOptions{
+		Author: bobSig, Committer: bobSig,
+	}); err != nil {
+		t.Fatalf("bob commit: %v", err)
+	}
+	if err := bobGr.Push(&gogit.PushOptions{RemoteName: "origin"}); err != nil {
+		t.Fatalf("bob push: %v", err)
+	}
+
+	// Alice pulls.
+	if err := r.Pull(); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	// The file Bob pushed must now exist in Alice's working tree.
+	pulled := filepath.Join(dir, "general", "bobs-post", "0000_root.md")
+	if _, err := os.Stat(pulled); err != nil {
+		t.Errorf("expected pulled file at %s: %v", pulled, err)
+	}
+
+	// Pull again — must be a no-op (already up to date).
+	if err := r.Pull(); err != nil {
+		t.Errorf("second Pull (already up to date): %v", err)
 	}
 }
 

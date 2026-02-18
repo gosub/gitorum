@@ -261,6 +261,30 @@ func TestHandleThread_NotFound(t *testing.T) {
 	}
 }
 
+// ---- sync ------------------------------------------------------------------
+
+func TestHandleSync_NoRepo(t *testing.T) {
+	srv := api.New(8080, t.TempDir(), nil, nil)
+	w := hit(t, srv, "GET", "/api/sync")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestHandleSync_NoRemote(t *testing.T) {
+	// setupForum creates a repo without a remote; sync should be a graceful no-op.
+	srv := setupForum(t)
+	w := hit(t, srv, "GET", "/api/sync")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var ok api.OKResponse
+	decodeJSON(t, w, &ok)
+	if !ok.OK {
+		t.Error("ok: expected true")
+	}
+}
+
 // ---- reply -----------------------------------------------------------------
 
 func TestHandleReply(t *testing.T) {
