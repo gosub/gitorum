@@ -233,3 +233,4 @@ label.checkbox input { width: auto; }
 details.advanced summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin-bottom: .5rem; }
 .badge-new { background: var(--accent); color: #fff; margin-left: .4rem; font-size: .7rem; vertical-align: middle; }
 .card-unread h2 a { font-weight: 700; }
+.preview { border: 1px dashed var(--border); border-radius: 4px; padding: .75rem; min-height: 6rem; background: var(--surface); }

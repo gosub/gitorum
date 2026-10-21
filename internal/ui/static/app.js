@@ -308,7 +308,9 @@ async function viewThread(catSlug, threadSlug) {
         <h3>Post a Reply</h3>
         <p id="replying-to" class="hint" hidden></p>
         <textarea id="reply-body" rows="6" placeholder="Your reply (Markdown supported)…"></textarea>
+        <div id="reply-body-preview" class="post-body preview" hidden></div>
         <div class="form-actions">
+          <button class="btn" data-action="togglePreview" data-target="reply-body">Preview</button>
           <button class="btn btn-primary" data-action="submitReply" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}">Submit Reply</button>
         </div>
       </section>`
@@ -350,7 +352,9 @@ function viewNewThread(catSlug) {
       <label>Body <small style="font-weight:400">(Markdown supported)</small>
         <textarea id="nt-body" rows="10" placeholder="Write your post here…"></textarea>
       </label>
+      <div id="nt-body-preview" class="post-body preview" hidden></div>
       <div class="form-actions">
+        <button type="button" class="btn" data-action="togglePreview" data-target="nt-body">Preview</button>
         <button type="submit" class="btn btn-primary">Create Thread</button>
         <a class="btn" href="#/cat/${u(catSlug)}">Cancel</a>
       </div>
@@ -358,6 +362,22 @@ function viewNewThread(catSlug) {
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
+// togglePreview swaps a textarea for its server-rendered preview.
+async function togglePreview({ target }, btn) {
+  const ta = $(target), pv = $(target + '-preview');
+  if (!pv.hidden) {
+    pv.hidden = true; ta.hidden = false; btn.textContent = 'Preview';
+    return;
+  }
+  try {
+    const res = await apiFetch('/preview', { method: 'POST', body: JSON.stringify({ body: ta.value }) });
+    pv.innerHTML = res.body_html || '<p class="empty">Nothing to preview.</p>';
+    pv.hidden = false; ta.hidden = true; btn.textContent = 'Edit';
+  } catch (e) {
+    alert('Preview failed: ' + e.message);
+  }
+}
+
 // Filename of the post the reply form answers; '' means the thread root.
 let REPLY_TO = '';
 
@@ -582,7 +602,7 @@ async function submitAddKey() {
 // ── Action registry ──────────────────────────────────────────────────────────
 const ACTIONS = {
   triggerSync, submitSetup, submitReply, submitNewThread, adminDelete, showHide,
-  replyTo, cancelReplyTo, scrollToPost,
+  replyTo, cancelReplyTo, scrollToPost, togglePreview,
   showAdminAddKey, showAdminCreateCategory, showJoinRequests,
   submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
   closeModal: () => closeModal(),

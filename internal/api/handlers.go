@@ -426,3 +426,14 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 	}
 	pushAfterWrite(w, st, http.StatusOK)
 }
+
+// POST /api/preview
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	var req PreviewRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, PreviewResponse{BodyHTML: forum.RenderMarkdown(req.Body)})
+}

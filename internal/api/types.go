@@ -131,6 +131,14 @@ type ApproveRejectRequest struct {
 	Username string `json:"username"`
 }
 
+type PreviewRequest struct {
+	Body string `json:"body"`
+}
+
+type PreviewResponse struct {
+	BodyHTML string `json:"body_html"`
+}
+
 // ---- generic ---------------------------------------------------------------
 
 type OKResponse struct {

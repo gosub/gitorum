@@ -921,3 +921,18 @@ func TestThread_RejectsTraversal(t *testing.T) {
 		t.Errorf("got %d, want 404", w.Code)
 	}
 }
+
+func TestPreview(t *testing.T) {
+	srv := setupForum(t)
+	w := hitJSON(t, srv, "POST", "/api/preview", map[string]string{
+		"body": "**bold** <script>alert(1)</script> [x](javascript:alert(1))",
+	})
+	var resp api.PreviewResponse
+	decodeJSON(t, w, &resp)
+	if !strings.Contains(resp.BodyHTML, "<strong>bold</strong>") {
+		t.Errorf("markdown not rendered: %s", resp.BodyHTML)
+	}
+	if strings.Contains(resp.BodyHTML, "<script>") || strings.Contains(resp.BodyHTML, "javascript:") {
+		t.Errorf("unsafe HTML passed through: %s", resp.BodyHTML)
+	}
+}
