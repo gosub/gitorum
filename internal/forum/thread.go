@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -34,7 +33,7 @@ func LoadThread(category, slug, dir, keysDir string) (*Thread, error) {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
+		if entry.IsDir() || !ValidPostFilename(name) {
 			continue
 		}
 		// If a tombstone file exists, include a placeholder so the thread

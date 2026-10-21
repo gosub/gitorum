@@ -17,6 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 )
 
 const gitTimeout = 30 * time.Second
@@ -146,6 +147,9 @@ func (r *Repo) JoinRequests() ([]JoinRequest, error) {
 			continue
 		}
 		username := strings.TrimSuffix(name, ".pub")
+		if !forum.ValidUsername(username) {
+			continue
+		}
 		// Skip if already approved.
 		if _, err := os.Stat(filepath.Join(r.Path, "keys", name)); err == nil {
 			continue
@@ -181,6 +185,9 @@ func (r *Repo) SubmitJoinRequest(identity *crypto.Identity) error {
 // ApproveJoinRequest moves requests/<username>.pub into keys/ and commits
 // both the addition and the deletion in a single commit.
 func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	if !forum.ValidUsername(username) {
+		return fmt.Errorf("invalid username %q", username)
+	}
 	reqRelPath := filepath.Join("requests", username+".pub")
 	reqAbsPath := filepath.Join(r.Path, reqRelPath)
 
@@ -204,6 +211,9 @@ func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username strin
 
 // RejectJoinRequest deletes requests/<username>.pub and commits the deletion.
 func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	if !forum.ValidUsername(username) {
+		return fmt.Errorf("invalid username %q", username)
+	}
 	reqRelPath := filepath.Join("requests", username+".pub")
 	reqAbsPath := filepath.Join(r.Path, reqRelPath)
 
@@ -217,6 +227,9 @@ func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string
 // CreateCategory creates a new forum category by writing META.toml and
 // committing it to the repository.
 func (r *Repo) CreateCategory(identity *crypto.Identity, slug, name, description string) error {
+	if !forum.ValidSlug(slug) {
+		return fmt.Errorf("invalid category slug %q", slug)
+	}
 	catDir := filepath.Join(r.Path, slug)
 	if err := os.MkdirAll(catDir, 0o755); err != nil {
 		return fmt.Errorf("create category dir: %w", err)
@@ -246,7 +259,7 @@ func (r *Repo) Categories() ([]string, error) {
 	}
 	var cats []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || !forum.ValidSlug(e.Name()) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(r.Path, e.Name(), "META.toml")); err == nil {
@@ -400,6 +413,9 @@ func (r *Repo) writeMeta(meta ForumMeta) error {
 }
 
 func (r *Repo) writePublicKey(username, pubkeyB64 string) error {
+	if !forum.ValidUsername(username) {
+		return fmt.Errorf("invalid username %q", username)
+	}
 	dir := filepath.Join(r.Path, "keys")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create keys dir: %w", err)

@@ -42,7 +42,7 @@ func LoadCategory(slug, dir string) (*Category, error) {
 		Description: meta.Description,
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || !ValidSlug(entry.Name()) {
 			continue
 		}
 		rootPath := filepath.Join(dir, entry.Name(), RootFilename)

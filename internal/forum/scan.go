@@ -41,7 +41,7 @@ func ScanThread(slug, dir, keysDir string) (*ThreadScan, error) {
 	lastAt := root.TimestampRaw
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".md") || name == RootFilename {
+		if e.IsDir() || !ValidPostFilename(name) || name == RootFilename {
 			continue
 		}
 		// Skip tombstoned replies.

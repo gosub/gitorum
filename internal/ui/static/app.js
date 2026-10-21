@@ -9,6 +9,18 @@ let STATUS = {};
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
+  // All interactive elements declare data-action instead of inline handlers,
+  // so no repo-controlled string is ever evaluated as JavaScript.
+  document.addEventListener('click', e => {
+    const el = e.target.closest('[data-action]');
+    if (!el || el.tagName === 'FORM') return;
+    const fn = ACTIONS[el.dataset.action];
+    if (fn) { e.preventDefault(); fn(el.dataset, el); }
+  });
+  document.addEventListener('submit', e => {
+    const fn = ACTIONS[e.target.dataset.action];
+    if (fn) { e.preventDefault(); fn(e.target.dataset, e.target); }
+  });
   await refreshStatus();
   window.addEventListener('hashchange', route);
   route();
@@ -68,7 +80,7 @@ async function refreshStatus() {
   ul.innerHTML = '';
   (cats.categories || []).forEach(c => {
     const li = document.createElement('li');
-    li.innerHTML = `<a href="#/cat/${c.slug}">${esc(c.name)}</a>`;
+    li.innerHTML = `<a href="#/cat/${u(c.slug)}">${esc(c.name)}</a>`;
     ul.appendChild(li);
   });
 }
@@ -115,7 +127,7 @@ function viewSetup() {
     <div class="setup-wizard">
       <div class="view-header"><h1>Welcome to Gitorum</h1></div>
       <p class="setup-intro">Your forum is not set up yet. Fill in the details below to get started.</p>
-      <form class="setup-form" onsubmit="submitSetup(event)">
+      <form class="setup-form" data-action="submitSetup">
         <label>Your username
           <input type="text" id="setup-username" required
             value="${esc(STATUS.username || '')}"
@@ -135,12 +147,11 @@ function viewSetup() {
     </div>`);
 }
 
-async function submitSetup(e) {
-  e.preventDefault();
+async function submitSetup(_, form) {
   const username  = $('setup-username').value.trim();
   const forumName = $('setup-forum-name').value.trim();
   const remoteURL = $('setup-remote').value.trim();
-  const btn = e.target.querySelector('[type=submit]');
+  const btn = form.querySelector('[type=submit]');
 
   if (remoteURL && !/^(https?:\/\/|git@|ssh:\/\/)/.test(remoteURL)) {
     alert('Remote URL must start with https://, http://, git@, or ssh://');
@@ -179,7 +190,7 @@ async function viewCategories() {
     h += '<div class="card-list">';
     cats.forEach(c => {
       h += `<div class="card">
-        <h2><a href="#/cat/${c.slug}">${esc(c.name)}</a></h2>
+        <h2><a href="#/cat/${u(c.slug)}">${esc(c.name)}</a></h2>
         <p>${esc(c.description)}</p>
         <small>${c.thread_count} thread${c.thread_count === 1 ? '' : 's'}</small>
       </div>`;
@@ -190,7 +201,7 @@ async function viewCategories() {
 }
 
 async function viewThreadList(catSlug) {
-  const data = await apiFetch(`/categories/${catSlug}/threads`).catch(e => {
+  const data = await apiFetch(`/categories/${u(catSlug)}/threads`).catch(e => {
     render(`<p class="error-msg">Could not load threads: ${esc(e.message)}</p>`);
     return null;
   });
@@ -202,7 +213,7 @@ async function viewThreadList(catSlug) {
   let h = `<nav class="breadcrumb"><a href="#/">Home</a> › ${esc(catName)}</nav>`;
   h += `<div class="view-header">
     <h1>${esc(catName)}</h1>
-    <a class="btn btn-primary" href="#/new-thread/${catSlug}">+ New Thread</a>
+    <a class="btn btn-primary" href="#/new-thread/${u(catSlug)}">+ New Thread</a>
   </div>`;
 
   if (!threads.length) {
@@ -211,7 +222,7 @@ async function viewThreadList(catSlug) {
     h += '<div class="card-list">';
     threads.forEach(t => {
       h += `<div class="card">
-        <h2><a href="#/cat/${catSlug}/thread/${t.slug}">${esc(t.title)}</a></h2>
+        <h2><a href="#/cat/${u(catSlug)}/thread/${u(t.slug)}">${esc(t.title)}</a></h2>
         <small>
           by <strong>${esc(t.author)}</strong> ·
           ${t.reply_count} repl${t.reply_count === 1 ? 'y' : 'ies'} ·
@@ -225,7 +236,7 @@ async function viewThreadList(catSlug) {
 }
 
 async function viewThread(catSlug, threadSlug) {
-  const data = await apiFetch(`/threads/${catSlug}/${threadSlug}`).catch(e => {
+  const data = await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}`).catch(e => {
     render(`<p class="error-msg">Could not load thread: ${esc(e.message)}</p>`);
     return null;
   });
@@ -234,7 +245,7 @@ async function viewThread(catSlug, threadSlug) {
   const posts = data.posts || [];
   let h = `<nav class="breadcrumb">
     <a href="#/">Home</a> ›
-    <a href="#/cat/${catSlug}">${esc(catSlug)}</a> ›
+    <a href="#/cat/${u(catSlug)}">${esc(catSlug)}</a> ›
     ${esc(threadSlug)}
   </nav>`;
 
@@ -249,7 +260,7 @@ async function viewThread(catSlug, threadSlug) {
       return;
     }
     const deleteBtn = STATUS.is_admin
-      ? `<button class="btn btn-danger btn-sm" onclick="adminDelete('${esc(catSlug)}','${esc(threadSlug)}','${esc(p.filename)}')">Delete</button>`
+      ? `<button class="btn btn-danger btn-sm" data-action="adminDelete" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}" data-filename="${esc(p.filename)}">Delete</button>`
       : '';
     h += `<article class="post${i === 0 ? ' post-root' : ''}">
       <header class="post-meta">
@@ -267,7 +278,7 @@ async function viewThread(catSlug, threadSlug) {
         <h3>Post a Reply</h3>
         <textarea id="reply-body" rows="6" placeholder="Your reply (Markdown supported)…"></textarea>
         <div class="form-actions">
-          <button class="btn btn-primary" onclick="submitReply('${esc(catSlug)}','${esc(threadSlug)}')">Submit Reply</button>
+          <button class="btn btn-primary" data-action="submitReply" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}">Submit Reply</button>
         </div>
       </section>`
     : `<section class="reply-form">
@@ -281,11 +292,11 @@ function viewNewThread(catSlug) {
   render(`
     <nav class="breadcrumb">
       <a href="#/">Home</a> ›
-      <a href="#/cat/${catSlug}">${esc(catSlug)}</a> ›
+      <a href="#/cat/${u(catSlug)}">${esc(catSlug)}</a> ›
       New Thread
     </nav>
     <h1 style="margin-bottom:1.25rem">New Thread</h1>
-    <form class="new-thread-form" onsubmit="submitNewThread(event,'${esc(catSlug)}')">
+    <form class="new-thread-form" data-action="submitNewThread" data-cat="${esc(catSlug)}">
       <label>Title
         <input type="text" id="nt-title" required placeholder="Thread title">
       </label>
@@ -297,13 +308,13 @@ function viewNewThread(catSlug) {
       </label>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Create Thread</button>
-        <a class="btn" href="#/cat/${esc(catSlug)}">Cancel</a>
+        <a class="btn" href="#/cat/${u(catSlug)}">Cancel</a>
       </div>
     </form>`);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
-async function submitReply(catSlug, threadSlug) {
+async function submitReply({ cat: catSlug, thread: threadSlug }) {
   const bodyEl = $('reply-body');
   const body   = bodyEl.value.trim();
   if (!body) return;
@@ -312,7 +323,7 @@ async function submitReply(catSlug, threadSlug) {
   if (btn) btn.disabled = true;
 
   try {
-    await apiFetch(`/threads/${catSlug}/${threadSlug}/reply`, {
+    await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}/reply`, {
       method: 'POST',
       body:   JSON.stringify({ body }),
     });
@@ -325,8 +336,7 @@ async function submitReply(catSlug, threadSlug) {
   }
 }
 
-async function submitNewThread(e, catSlug) {
-  e.preventDefault();
+async function submitNewThread({ cat: catSlug }) {
   const title   = $('nt-title').value.trim();
   const slug    = $('nt-slug').value.trim();
   const bodyRaw = $('nt-body').value.trim();
@@ -338,13 +348,13 @@ async function submitNewThread(e, catSlug) {
       method: 'POST',
       body:   JSON.stringify({ category: catSlug, slug, body }),
     });
-    location.hash = `#/cat/${catSlug}/thread/${slug}`;
+    location.hash = `#/cat/${u(catSlug)}/thread/${u(slug)}`;
   } catch (e) {
     alert('Error: ' + e.message);
   }
 }
 
-async function adminDelete(catSlug, threadSlug, filename) {
+async function adminDelete({ cat: catSlug, thread: threadSlug, filename }) {
   if (!confirm(`Delete "${filename}"?\nThis creates a signed tombstone and is permanent.`)) return;
   try {
     await apiFetch('/admin/delete', {
@@ -367,8 +377,8 @@ function showAdminAddKey() {
       <input type="text" id="ak-pubkey" placeholder="AAAA…">
     </label>
     <div class="form-actions">
-      <button class="btn btn-primary" onclick="submitAddKey()">Add Key</button>
-      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" data-action="submitAddKey">Add Key</button>
+      <button class="btn" data-action="closeModal">Cancel</button>
     </div>`);
 }
 
@@ -385,8 +395,8 @@ function showAdminCreateCategory() {
       <input type="text" id="nc-desc" placeholder="What this category is about…">
     </label>
     <div class="form-actions">
-      <button class="btn btn-primary" onclick="submitCreateCategory()">Create</button>
-      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" data-action="submitCreateCategory">Create</button>
+      <button class="btn" data-action="closeModal">Cancel</button>
     </div>`);
 }
 
@@ -402,7 +412,7 @@ async function submitCreateCategory() {
     });
     closeModal();
     await refreshStatus();
-    location.hash = `#/cat/${slug}`;
+    location.hash = `#/cat/${u(slug)}`;
     route();
   } catch (e) {
     alert('Error: ' + e.message);
@@ -429,17 +439,17 @@ async function showJoinRequests() {
         <strong>@${esc(req.username)}</strong>
         <div class="join-req-key">${esc(req.pubkey)}</div>
         <div class="form-actions" style="margin-top:.4rem">
-          <button class="btn btn-primary btn-sm" onclick="approveJoinRequest('${esc(req.username)}')">Approve</button>
-          <button class="btn btn-danger btn-sm"  onclick="rejectJoinRequest('${esc(req.username)}')">Reject</button>
+          <button class="btn btn-primary btn-sm" data-action="approveJoinRequest" data-username="${esc(req.username)}">Approve</button>
+          <button class="btn btn-danger btn-sm" data-action="rejectJoinRequest" data-username="${esc(req.username)}">Reject</button>
         </div>
       </div>`;
     });
   }
-  h += '<div class="form-actions" style="margin-top:.75rem"><button class="btn" onclick="closeModal()">Close</button></div>';
+  h += '<div class="form-actions" style="margin-top:.75rem"><button class="btn" data-action="closeModal">Close</button></div>';
   openModal(h);
 }
 
-async function approveJoinRequest(username) {
+async function approveJoinRequest({ username }) {
   try {
     await apiFetch('/admin/approve', { method: 'POST', body: JSON.stringify({ username }) });
     await refreshStatus();
@@ -449,7 +459,7 @@ async function approveJoinRequest(username) {
   }
 }
 
-async function rejectJoinRequest(username) {
+async function rejectJoinRequest({ username }) {
   if (!confirm(`Reject join request from @${username}?`)) return;
   try {
     await apiFetch('/admin/reject', { method: 'POST', body: JSON.stringify({ username }) });
@@ -476,6 +486,14 @@ async function submitAddKey() {
   }
 }
 
+// ── Action registry ──────────────────────────────────────────────────────────
+const ACTIONS = {
+  triggerSync, submitSetup, submitReply, submitNewThread, adminDelete,
+  showAdminAddKey, showAdminCreateCategory, showJoinRequests,
+  submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
+  closeModal: () => closeModal(),
+};
+
 // ── Modal ────────────────────────────────────────────────────────────────────
 function openModal(html) {
   closeModal();
@@ -501,8 +519,12 @@ function esc(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
+
+// u encodes a value for use as a URL path segment or hash component.
+function u(s) { return encodeURIComponent(String(s ?? '')); }
 
 function sigBadge(post) {
   switch (post.sig_status) {

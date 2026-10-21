@@ -590,7 +590,7 @@ func TestHandleAdminDelete_PostNotFound(t *testing.T) {
 	body := map[string]string{
 		"category": "general",
 		"thread":   "hello-world",
-		"filename": "no-such-post.md",
+		"filename": "1700000000000_deadbeef.md",
 	}
 	w := hitJSON(t, srv, "POST", "/api/admin/delete", body)
 	if w.Code != http.StatusNotFound {
@@ -845,5 +845,72 @@ func TestSync_GetNotAllowed(t *testing.T) {
 	w := hit(t, srv, "GET", "/api/sync")
 	if w.Code == http.StatusOK && strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
 		t.Errorf("GET /api/sync must not trigger a sync")
+	}
+}
+
+// ---- hostile input ---------------------------------------------------------
+
+func TestAdminDelete_RejectsTraversal(t *testing.T) {
+	srv := setupForum(t)
+	for _, req := range []map[string]string{
+		{"category": "..", "thread": "..", "filename": "GITORUM.toml"},
+		{"category": "general", "thread": "hello-world", "filename": "../../GITORUM.toml"},
+		{"category": "general/../..", "thread": "x", "filename": "0000_root.md"},
+		{"category": "general", "thread": "hello-world", "filename": "x');alert(1);('.md"},
+	} {
+		w := hitJSON(t, srv, "POST", "/api/admin/delete", req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%v: got %d, want 400", req, w.Code)
+		}
+	}
+}
+
+func TestAddKey_RejectsBadUsernameAndKey(t *testing.T) {
+	srv := setupForum(t)
+	bob, _ := crypto.Generate("bob")
+	for _, tc := range []struct{ user, key string }{
+		{"../GITORUM", bob.PublicKey},
+		{"x');alert(1);('", bob.PublicKey},
+		{"Bob", bob.PublicKey},
+		{"bob", "not-a-key"},
+	} {
+		w := hitJSON(t, srv, "POST", "/api/admin/addkey", map[string]string{"username": tc.user, "pubkey": tc.key})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%q/%q: got %d, want 400", tc.user, tc.key, w.Code)
+		}
+	}
+}
+
+func TestAddKey_RefusesOverwrite(t *testing.T) {
+	srv := setupForum(t)
+	mallory, _ := crypto.Generate("alice")
+	w := hitJSON(t, srv, "POST", "/api/admin/addkey", map[string]string{"username": "alice", "pubkey": mallory.PublicKey})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("overwriting alice's key: got %d, want 409", w.Code)
+	}
+}
+
+func TestJoinRequests_SkipsHostileFilenames(t *testing.T) {
+	srv := setupForum(t)
+	reqDir := filepath.Join(srv.RepoPath, "requests")
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reqDir, "x');alert(1);('.pub"), []byte("AAAA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := hit(t, srv, "GET", "/api/admin/requests")
+	var resp api.JoinRequestsResponse
+	decodeJSON(t, w, &resp)
+	if len(resp.Requests) != 0 {
+		t.Errorf("hostile request filename was listed: %+v", resp.Requests)
+	}
+}
+
+func TestThread_RejectsTraversal(t *testing.T) {
+	srv := setupForum(t)
+	w := hit(t, srv, "GET", "/api/threads/general/..%2F..")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("got %d, want 404", w.Code)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 )
 
 var rootCmd = &cobra.Command{
@@ -52,6 +53,9 @@ func init() {
 }
 
 func runKeygen(cmd *cobra.Command, args []string) error {
+	if !forum.ValidUsername(keygenUsername) {
+		return fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, - and _", keygenUsername)
+	}
 	path := keygenOutput
 	if path == "" {
 		path = crypto.DefaultIdentityPath()

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 
 	"github.com/gosub/gitorum/internal/crypto"
@@ -14,8 +13,6 @@ import (
 )
 
 const maxBodyBytes = 64 << 10 // 64 KB
-
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // GET /api/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -68,8 +65,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.Username == "" {
-		apiError(w, http.StatusBadRequest, "username is required")
+	if !forum.ValidUsername(req.Username) {
+		apiError(w, http.StatusBadRequest, "username is required: lowercase letters, digits, - and _")
 		return
 	}
 	if req.ForumName == "" {
@@ -191,6 +188,10 @@ func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 // GET /api/categories/{cat}/threads
 func (s *Server) handleThreads(w http.ResponseWriter, r *http.Request) {
 	catSlug := r.PathValue("cat")
+	if !forum.ValidSlug(catSlug) {
+		apiError(w, http.StatusNotFound, "category not found")
+		return
+	}
 
 	if s.repo == nil {
 		writeJSON(w, http.StatusOK, ThreadsResponse{
@@ -229,6 +230,10 @@ func (s *Server) handleThreads(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	catSlug := r.PathValue("cat")
 	threadSlug := r.PathValue("thread")
+	if !forum.ValidSlug(catSlug) || !forum.ValidSlug(threadSlug) {
+		apiError(w, http.StatusNotFound, "thread not found")
+		return
+	}
 
 	if s.repo == nil {
 		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
@@ -260,6 +265,10 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	catSlug := r.PathValue("cat")
 	threadSlug := r.PathValue("thread")
+	if !forum.ValidSlug(catSlug) || !forum.ValidSlug(threadSlug) {
+		apiError(w, http.StatusNotFound, "thread not found")
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req ReplyRequest
@@ -316,7 +325,7 @@ func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "slug and name are required")
 		return
 	}
-	if !slugRe.MatchString(req.Slug) {
+	if !forum.ValidSlug(req.Slug) {
 		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
 		return
 	}
@@ -352,8 +361,12 @@ func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "category, slug, and body are required")
 		return
 	}
-	if !slugRe.MatchString(req.Slug) {
+	if !forum.ValidSlug(req.Slug) {
 		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
+		return
+	}
+	if !forum.ValidSlug(req.Category) {
+		apiError(w, http.StatusBadRequest, "category not found: "+req.Category)
 		return
 	}
 	if s.identity == nil {
@@ -422,11 +435,15 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Username == "" {
-		apiError(w, http.StatusBadRequest, "username is required")
+	if !forum.ValidUsername(req.Username) {
+		apiError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
 	if !s.requireAdmin(w) {
+		return
+	}
+	if s.keyExists(req.Username) {
+		apiError(w, http.StatusConflict, "username @"+req.Username+" already has a key")
 		return
 	}
 	if err := s.repo.ApproveJoinRequest(s.identity, req.Username); err != nil {
@@ -446,8 +463,8 @@ func (s *Server) handleRejectRequest(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Username == "" {
-		apiError(w, http.StatusBadRequest, "username is required")
+	if !forum.ValidUsername(req.Username) {
+		apiError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
 	if !s.requireAdmin(w) {
@@ -472,6 +489,10 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Category == "" || req.Thread == "" || req.Filename == "" {
 		apiError(w, http.StatusBadRequest, "category, thread, and filename are required")
+		return
+	}
+	if !forum.ValidSlug(req.Category) || !forum.ValidSlug(req.Thread) || !forum.ValidPostFilename(req.Filename) {
+		apiError(w, http.StatusBadRequest, "invalid category, thread, or filename")
 		return
 	}
 	if !s.requireAdmin(w) {
@@ -517,6 +538,18 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w) {
 		return
 	}
+	if !forum.ValidUsername(req.Username) {
+		apiError(w, http.StatusBadRequest, "invalid username: use lowercase letters, digits, - and _")
+		return
+	}
+	if err := crypto.ValidatePublicKey(req.PubKey); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.keyExists(req.Username) {
+		apiError(w, http.StatusConflict, "username @"+req.Username+" already has a key")
+		return
+	}
 
 	if err := s.repo.WritePublicKey(s.identity, req.Username, req.PubKey); err != nil {
 		apiError(w, http.StatusInternalServerError, "write public key: "+err.Error())
@@ -526,6 +559,12 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handleAdminAddKey: push: %v", err)
 	}
 	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+}
+
+// keyExists reports whether keys/<username>.pub is present.
+func (s *Server) keyExists(username string) bool {
+	_, err := os.Stat(filepath.Join(s.repo.Path, "keys", username+".pub"))
+	return err == nil
 }
 
 // requireAdmin checks that s.identity is the forum admin. It writes the

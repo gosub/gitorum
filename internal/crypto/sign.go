@@ -40,6 +40,18 @@ func VerifyWithPublicKeyB64(pubB64 string, message []byte, sigB64 string) error 
 	return Verify(ed25519.PublicKey(b), message, sigB64)
 }
 
+// ValidatePublicKey checks that pubB64 is a base64-encoded Ed25519 public key.
+func ValidatePublicKey(pubB64 string) error {
+	b, err := base64.StdEncoding.DecodeString(pubB64)
+	if err != nil {
+		return fmt.Errorf("public key is not valid base64: %w", err)
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return fmt.Errorf("public key: expected %d bytes, got %d", ed25519.PublicKeySize, len(b))
+	}
+	return nil
+}
+
 // CanonicalForm produces the canonical byte sequence used for signing a post.
 //
 // Format:

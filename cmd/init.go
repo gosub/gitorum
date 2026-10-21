@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
 )
 
@@ -60,6 +61,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	if username == "" {
 		return fmt.Errorf("--username is required when no identity file exists yet")
+	}
+	if !forum.ValidUsername(username) {
+		return fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, - and _", username)
 	}
 
 	// Load or create identity.
