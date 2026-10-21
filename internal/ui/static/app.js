@@ -77,7 +77,7 @@ async function triggerSync() {
   const btn = $('sync-btn');
   btn.disabled = true;
   try {
-    await apiFetch('/sync');
+    await apiFetch('/sync', { method: 'POST' });
     await refreshStatus();
     flash('green');
   } catch (e) {

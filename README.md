@@ -118,10 +118,15 @@ commit. Pass `--remote` to configure an `origin` remote immediately.
 ### `gitorum serve`
 
 ```sh
-gitorum serve [--port 8080] [--repo .] [--identity ~/.config/gitorum/identity.toml]
+gitorum serve [--port 8080] [--listen 127.0.0.1] [--repo .] [--identity ~/.config/gitorum/identity.toml]
 ```
 
 Starts the local HTTP server. Open `http://localhost:8080` in your browser.
+
+The API has no login: whoever can reach it can post with your key. It
+therefore binds to `127.0.0.1` by default, and rejects cross-origin requests,
+non-JSON writes, and requests for non-loopback host names (DNS rebinding).
+Pass `--listen 0.0.0.0` only on a network you fully trust.
 The web UI provides:
 
 - Category and thread browsing
@@ -270,7 +275,7 @@ remote and push local posts:
 click the sync button in the sidebar
 
 # or via the API
-curl http://localhost:8080/api/sync
+curl -X POST -H 'Content-Type: application/json' http://localhost:8080/api/sync
 ```
 
 On push conflict the binary performs `git pull --rebase` and retries once.

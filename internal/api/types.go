@@ -56,7 +56,7 @@ type StatusResponse struct {
 	ForumName   string `json:"forum_name"`
 	RemoteURL   string `json:"remote_url,omitempty"`
 	Synced      bool   `json:"synced"`
-	Initialized bool   `json:"initialized"`              // false until forum repo exists
+	Initialized bool   `json:"initialized"`            // false until forum repo exists
 	LastSyncAt  string `json:"last_sync_at,omitempty"` // RFC3339, set after first sync
 }
 

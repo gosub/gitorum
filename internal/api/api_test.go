@@ -78,6 +78,10 @@ func setupForum(t *testing.T) *api.Server {
 func hit(t *testing.T, srv *api.Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
+	req.Host = "localhost:8080"
+	if method != "GET" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	w := httptest.NewRecorder()
 	srv.Handler(ui.StaticFS).ServeHTTP(w, req)
 	return w
@@ -91,6 +95,7 @@ func hitJSON(t *testing.T, srv *api.Server, method, path string, body any) *http
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(data))
+	req.Host = "localhost:8080"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler(ui.StaticFS).ServeHTTP(w, req)
@@ -271,7 +276,7 @@ func TestHandleThread_NotFound(t *testing.T) {
 
 func TestHandleSync_NoRepo(t *testing.T) {
 	srv := api.New(8080, t.TempDir(), nil, nil)
-	w := hit(t, srv, "GET", "/api/sync")
+	w := hit(t, srv, "POST", "/api/sync")
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", w.Code)
 	}
@@ -280,7 +285,7 @@ func TestHandleSync_NoRepo(t *testing.T) {
 func TestHandleSync_NoRemote(t *testing.T) {
 	// setupForum creates a repo without a remote; sync should be a graceful no-op.
 	srv := setupForum(t)
-	w := hit(t, srv, "GET", "/api/sync")
+	w := hit(t, srv, "POST", "/api/sync")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d\nbody: %s", w.Code, w.Body.String())
 	}
@@ -786,5 +791,59 @@ func TestHandleCreateCategory_InvalidSlug(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("slug %q: expected 400, got %d", slug, w.Code)
 		}
+	}
+}
+
+// ---- request guard ---------------------------------------------------------
+
+func TestGuard(t *testing.T) {
+	srv := setupForum(t)
+	h := srv.Handler(ui.StaticFS)
+
+	tests := []struct {
+		name        string
+		method      string
+		host        string
+		origin      string
+		contentType string
+		want        int
+	}{
+		{"same-origin json post", "POST", "localhost:8080", "http://localhost:8080", "application/json", http.StatusCreated},
+		{"no origin json post", "POST", "127.0.0.1:8080", "", "application/json", http.StatusCreated},
+		{"cross-origin post", "POST", "localhost:8080", "https://evil.example", "application/json", http.StatusForbidden},
+		{"text/plain simple request", "POST", "localhost:8080", "", "text/plain", http.StatusUnsupportedMediaType},
+		{"form simple request", "POST", "localhost:8080", "", "application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"dns rebinding host", "POST", "evil.example:8080", "http://evil.example:8080", "application/json", http.StatusForbidden},
+		{"dns rebinding get", "GET", "evil.example:8080", "", "", http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := "/api/threads/general/hello-world/reply"
+			if tt.method == "GET" {
+				path = "/api/status"
+			}
+			body := `{"body":"guard test: ` + tt.name + `"}`
+			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
+			req.Host = tt.host
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != tt.want {
+				t.Errorf("status: got %d, want %d (body: %s)", w.Code, tt.want, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestSync_GetNotAllowed(t *testing.T) {
+	srv := setupForum(t)
+	w := hit(t, srv, "GET", "/api/sync")
+	if w.Code == http.StatusOK && strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("GET /api/sync must not trigger a sync")
 	}
 }

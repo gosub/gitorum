@@ -26,12 +26,14 @@ Open http://localhost:<port> in your browser to use the forum.`,
 
 var (
 	servePort     int
+	serveListen   string
 	serveRepoPath string
 	serveIdentity string
 )
 
 func init() {
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 8080, "HTTP port to listen on")
+	serveCmd.Flags().StringVar(&serveListen, "listen", api.DefaultListenHost, "interface to bind; non-loopback addresses expose the unauthenticated API to the network")
 	serveCmd.Flags().StringVar(&serveRepoPath, "repo", ".", "path to the forum git repository")
 	serveCmd.Flags().StringVar(&serveIdentity, "identity", "", "path to identity file (default: "+defaultIdentityHint()+")")
 
@@ -78,5 +80,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	srv := api.New(servePort, absRepo, r, id)
+	srv.Host = serveListen
 	return srv.ListenAndServe(ui.StaticFS)
 }

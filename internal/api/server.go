@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -14,12 +17,18 @@ import (
 	"github.com/gosub/gitorum/internal/repo"
 )
 
+// DefaultListenHost is the interface the server binds to unless told
+// otherwise. The API is unauthenticated, so it must not be reachable from the
+// network by default.
+const DefaultListenHost = "127.0.0.1"
+
 // Server holds runtime state for the HTTP server.
 type Server struct {
-	Port     int
-	RepoPath string
-	repo     *repo.Repo
-	identity *crypto.Identity
+	Port       int
+	Host       string // interface to bind; DefaultListenHost when empty
+	RepoPath   string
+	repo       *repo.Repo
+	identity   *crypto.Identity
 	mu         sync.Mutex // guards repo, identity, and lastSyncAt
 	lastSyncAt time.Time
 }
@@ -36,7 +45,7 @@ func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("POST /api/setup", s.handleSetup)
-	mux.HandleFunc("GET /api/sync", s.handleSync)
+	mux.HandleFunc("POST /api/sync", s.handleSync)
 	mux.HandleFunc("GET /api/categories", s.handleCategories)
 	mux.HandleFunc("GET /api/categories/{cat}/threads", s.handleThreads)
 	mux.HandleFunc("GET /api/threads/{cat}/{thread}", s.handleThread)
@@ -49,14 +58,70 @@ func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/admin/delete", s.handleAdminDelete)
 	mux.HandleFunc("POST /api/admin/addkey", s.handleAdminAddKey)
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
-	return mux
+	return guard(mux, s.Host != "" && !isLoopback(s.Host))
 }
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe(staticFS fs.FS) error {
-	addr := fmt.Sprintf(":%d", s.Port)
-	log.Printf("Gitorum listening on http://localhost%s  (repo: %s)", addr, s.RepoPath)
+	host := s.Host
+	if host == "" {
+		host = DefaultListenHost
+	}
+	addr := net.JoinHostPort(host, fmt.Sprint(s.Port))
+	if !isLoopback(host) {
+		log.Printf("WARNING: listening on %s; anyone who can reach this address can post as you", host)
+	}
+	log.Printf("Gitorum listening on http://%s  (repo: %s)", addr, s.RepoPath)
 	return http.ListenAndServe(addr, s.Handler(staticFS))
+}
+
+// ---- request guard ---------------------------------------------------------
+
+// guard rejects requests that could come from another website (CSRF) or from
+// a hostile DNS name pointing at the local server (DNS rebinding):
+//
+//   - the Host header must be a loopback name or IP, unless the operator
+//     explicitly chose to listen on a non-loopback interface (anyHost);
+//   - a present Origin header must match the Host;
+//   - state-changing requests must carry Content-Type: application/json,
+//     which browsers cannot send cross-origin without a CORS preflight.
+func guard(next http.Handler, anyHost bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !anyHost && !isLoopback(hostOnly(r.Host)) {
+			apiError(w, http.StatusForbidden, "forbidden host")
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Host != r.Host {
+				apiError(w, http.StatusForbidden, "cross-origin request rejected")
+				return
+			}
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mt != "application/json" {
+				apiError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ---- helpers ---------------------------------------------------------------
