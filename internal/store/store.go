@@ -297,7 +297,9 @@ func (s *Store) NewThread(id *crypto.Identity, cat, slug, body string) error {
 }
 
 // Reply adds a reply to <cat>/<slug> signed by id and returns its filename.
-func (s *Store) Reply(id *crypto.Identity, cat, slug, body string) (string, error) {
+// replyTo names the post being answered; "" means the thread's root post.
+// The reply's parent field is the hash of that post's file.
+func (s *Store) Reply(id *crypto.Identity, cat, slug, body, replyTo string) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("body is required: %w", ErrInvalid)
 	}
@@ -308,11 +310,20 @@ func (s *Store) Reply(id *crypto.Identity, cat, slug, body string) (string, erro
 	if !forum.ValidSlug(cat) || !forum.ValidSlug(slug) {
 		return "", fmt.Errorf("thread %s/%s: %w", cat, slug, ErrNotFound)
 	}
-	root, err := fs.ReadFile(v.fs, path.Join(cat, slug, forum.RootFilename))
-	if err != nil {
+	if !exists(v, path.Join(cat, slug, forum.RootFilename)) {
 		return "", fmt.Errorf("thread %s/%s: %w", cat, slug, ErrNotFound)
 	}
-	post, err := forum.SignPost(id, forum.PostHash(root), body)
+	if replyTo == "" {
+		replyTo = forum.RootFilename
+	}
+	if !forum.ValidPostFilename(replyTo) {
+		return "", fmt.Errorf("reply_to %q: %w", replyTo, ErrInvalid)
+	}
+	parent, err := fs.ReadFile(v.fs, path.Join(cat, slug, replyTo))
+	if err != nil {
+		return "", fmt.Errorf("post %s being replied to: %w", replyTo, ErrNotFound)
+	}
+	post, err := forum.SignPost(id, forum.PostHash(parent), body)
 	if err != nil {
 		return "", fmt.Errorf("sign post: %w", err)
 	}

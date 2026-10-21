@@ -262,7 +262,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := st.Reply(id, r.PathValue("cat"), r.PathValue("thread"), req.Body); err != nil {
+	if _, err := st.Reply(id, r.PathValue("cat"), r.PathValue("thread"), req.Body, req.ReplyTo); err != nil {
 		storeError(w, err)
 		return
 	}

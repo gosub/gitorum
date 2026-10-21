@@ -237,6 +237,7 @@ async function viewThreadList(catSlug) {
 }
 
 async function viewThread(catSlug, threadSlug) {
+  REPLY_TO = '';
   const data = await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}`).catch(e => {
     render(`<p class="error-msg">Could not load thread: ${esc(e.message)}</p>`);
     return null;
@@ -244,6 +245,9 @@ async function viewThread(catSlug, threadSlug) {
   if (!data) return;
 
   const posts = data.posts || [];
+  const byHash = {};
+  posts.forEach(p => { if (p.hash) byHash[p.hash] = p; });
+  const rootHash = posts.length ? posts[0].hash : '';
   let h = `<nav class="breadcrumb">
     <a href="#/">Home</a> ›
     <a href="#/cat/${u(catSlug)}">${esc(catSlug)}</a> ›
@@ -252,7 +256,7 @@ async function viewThread(catSlug, threadSlug) {
 
   posts.forEach((p, i) => {
     if (p.tombstoned) {
-      h += `<article class="post post-deleted${i === 0 ? ' post-root' : ''}">
+      h += `<article class="post post-deleted${i === 0 ? ' post-root' : ''}" id="post-${esc(p.filename)}">
         <header class="post-meta">
           <span class="author">[deleted]</span>
         </header>
@@ -263,12 +267,20 @@ async function viewThread(catSlug, threadSlug) {
     const deleteBtn = STATUS.is_admin
       ? `<button class="btn btn-danger btn-sm" data-action="showHide" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}" data-filename="${esc(p.filename)}">Hide</button>`
       : '';
-    h += `<article class="post${i === 0 ? ' post-root' : ''}">
+    const parent = p.parent && p.parent !== rootHash ? byHash[p.parent] : null;
+    const inReplyTo = parent
+      ? `<a href="#" class="in-reply-to" data-action="scrollToPost" data-filename="${esc(parent.filename)}">↪ in reply to ${esc(parent.author || '[deleted]')}</a>`
+      : '';
+    const replyBtn = STATUS.username
+      ? `<button class="btn btn-sm" data-action="replyTo" data-filename="${esc(p.filename)}" data-author="${esc(p.author)}">Reply</button>`
+      : '';
+    h += `<article class="post${i === 0 ? ' post-root' : ''}" id="post-${esc(p.filename)}">
       <header class="post-meta">
         <span class="author">${esc(p.author)}</span>
         ${sigBadge(p)}
         <time class="ts" title="${esc(p.timestamp)}">${relTime(p.timestamp)}</time>
-        ${deleteBtn}
+        ${inReplyTo}
+        <span class="post-actions">${replyBtn}${deleteBtn}</span>
       </header>
       <div class="post-body">${p.body_html}</div>
     </article>`;
@@ -277,6 +289,7 @@ async function viewThread(catSlug, threadSlug) {
   h += STATUS.username
     ? `<section class="reply-form">
         <h3>Post a Reply</h3>
+        <p id="replying-to" class="hint" hidden></p>
         <textarea id="reply-body" rows="6" placeholder="Your reply (Markdown supported)…"></textarea>
         <div class="form-actions">
           <button class="btn btn-primary" data-action="submitReply" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}">Submit Reply</button>
@@ -315,6 +328,30 @@ function viewNewThread(catSlug) {
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
+// Filename of the post the reply form answers; '' means the thread root.
+let REPLY_TO = '';
+
+function replyTo({ filename, author }) {
+  REPLY_TO = filename;
+  const el = $('replying-to');
+  el.innerHTML = `Replying to <strong>${esc(author)}</strong> · <a href="#" data-action="cancelReplyTo">cancel</a>`;
+  el.hidden = false;
+  $('reply-body').focus();
+}
+
+function cancelReplyTo() {
+  REPLY_TO = '';
+  $('replying-to').hidden = true;
+}
+
+function scrollToPost({ filename }) {
+  const el = document.getElementById('post-' + filename);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('post-highlight');
+  setTimeout(() => el.classList.remove('post-highlight'), 1500);
+}
+
 async function submitReply({ cat: catSlug, thread: threadSlug }) {
   const bodyEl = $('reply-body');
   const body   = bodyEl.value.trim();
@@ -326,9 +363,10 @@ async function submitReply({ cat: catSlug, thread: threadSlug }) {
   try {
     await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}/reply`, {
       method: 'POST',
-      body:   JSON.stringify({ body }),
+      body:   JSON.stringify({ body, reply_to: REPLY_TO }),
     });
     bodyEl.value = '';
+    REPLY_TO = '';
     await viewThread(catSlug, threadSlug);
     window.scrollTo(0, document.body.scrollHeight);
   } catch (e) {
@@ -515,6 +553,7 @@ async function submitAddKey() {
 // ── Action registry ──────────────────────────────────────────────────────────
 const ACTIONS = {
   triggerSync, submitSetup, submitReply, submitNewThread, adminDelete, showHide,
+  replyTo, cancelReplyTo, scrollToPost,
   showAdminAddKey, showAdminCreateCategory, showJoinRequests,
   submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
   closeModal: () => closeModal(),

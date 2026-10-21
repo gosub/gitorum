@@ -42,7 +42,8 @@ type PostResponse struct {
 	Author     string `json:"author"`
 	PubKey     string `json:"pubkey"`
 	Timestamp  string `json:"timestamp"`
-	Parent     string `json:"parent"`
+	Parent     string `json:"parent"` // hash of the post this one answers
+	Hash       string `json:"hash"`   // hash of this post's file (what replies put in parent)
 	Body       string `json:"body"`
 	BodyHTML   string `json:"body_html"`
 	Filename   string `json:"filename"`
@@ -77,7 +78,8 @@ type SetupRequest struct {
 // ---- request types ---------------------------------------------------------
 
 type ReplyRequest struct {
-	Body string `json:"body"`
+	Body    string `json:"body"`
+	ReplyTo string `json:"reply_to"` // filename of the post answered; "" = root
 }
 
 type NewThreadRequest struct {

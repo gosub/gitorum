@@ -22,6 +22,7 @@ func postToResponse(p *forum.Post) PostResponse {
 		PubKey:    p.PubKey,
 		Timestamp: p.TimestampRaw,
 		Parent:    p.Parent,
+		Hash:      p.Hash,
 		Body:      p.Body,
 		BodyHTML:  p.BodyHTML,
 		Filename:  p.Filename,

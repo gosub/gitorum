@@ -97,7 +97,7 @@ func TestThreads_CacheFollowsHead(t *testing.T) {
 	if err != nil || len(th.Posts) != 1 {
 		t.Fatalf("Thread: %v %v", th, err)
 	}
-	if _, err := st.Reply(admin, "general", "hello", "a reply"); err != nil {
+	if _, err := st.Reply(admin, "general", "hello", "a reply", ""); err != nil {
 		t.Fatal(err)
 	}
 	th, _ = st.Thread("general", "hello")
@@ -112,7 +112,7 @@ func TestReply_SameBodyTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if _, err := st.Reply(admin, "general", "hello", "+1"); err != nil {
+		if _, err := st.Reply(admin, "general", "hello", "+1", ""); err != nil {
 			t.Fatalf("reply %d: %v", i, err)
 		}
 	}
@@ -187,7 +187,7 @@ func TestTrust_PlantedKeyIsUntrusted(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Reply(mallory, "general", "hi", "trust me"); err != nil {
+	if _, err := st.Reply(mallory, "general", "hi", "trust me", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigUntrusted {
@@ -201,7 +201,7 @@ func TestTrust_PlantedKeyIsUntrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &crypto.Identity{Username: "alice", PublicKey: mallory.PublicKey, PrivateKey: mallory.PrivateKey}
-	if _, err := st.Reply(fake, "general", "hi", "I am alice"); err != nil {
+	if _, err := st.Reply(fake, "general", "hi", "I am alice", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := lastPostStatus(t, st, "general", "hi"); got == forum.SigValid {
@@ -327,7 +327,7 @@ func TestPurge_RemovesFileKeepsPlaceholder(t *testing.T) {
 	if err := st.NewThread(admin, "general", "t", "# T"); err != nil {
 		t.Fatal(err)
 	}
-	name, err := st.Reply(admin, "general", "t", "spam spam spam")
+	name, err := st.Reply(admin, "general", "t", "spam spam spam", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,5 +403,35 @@ func TestJoinToken(t *testing.T) {
 	}
 	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigValid {
 		t.Errorf("post after token approval: %v", got)
+	}
+}
+
+func TestReply_ToSpecificPost(t *testing.T) {
+	st, admin := newStore(t)
+	if err := st.NewThread(admin, "general", "t", "# T"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.Reply(admin, "general", "t", "first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Reply(admin, "general", "t", "answering first", first); err != nil {
+		t.Fatal(err)
+	}
+	th, _ := st.Thread("general", "t")
+	byName := map[string]*forum.Post{}
+	for _, p := range th.Posts {
+		byName[p.Filename] = p
+	}
+	if th.Posts[1].Parent != th.Root.Hash {
+		t.Error("default reply does not point at the root")
+	}
+	if th.Posts[2].Parent != byName[first].Hash {
+		t.Error("reply_to post does not point at the answered post")
+	}
+	for _, bad := range []string{"../../GITORUM.toml", "1700000000000_deadbeef.md"} {
+		if _, err := st.Reply(admin, "general", "t", "x", bad); err == nil {
+			t.Errorf("reply_to %q accepted", bad)
+		}
 	}
 }
