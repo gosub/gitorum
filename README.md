@@ -148,6 +148,27 @@ The web UI provides:
 If the forum has not been initialized yet, the browser will show a setup
 wizard instead of the forum.
 
+### `gitorum post`, `gitorum reply`, `gitorum category`
+
+```sh
+echo "Hello everyone" | gitorum post general --title "Introductions" [--slug intro]
+gitorum reply general/introductions --body "Welcome!" [--to <post filename>]
+gitorum category general --name "General" [--description "..."]   # admin only
+```
+
+Create signed threads, replies and categories without the web UI. Bodies
+come from `--body`, `--file`, or standard input. Each command syncs
+afterwards unless `--no-push` is given. All take `--repo` and `--identity`.
+
+### `gitorum sync`
+
+```sh
+gitorum sync [--repo .] [--identity <path>]
+```
+
+Fetches, replays local commits on top of the remote if needed, and pushes
+(see [Sync model](#sync-model)).
+
 ### `gitorum clone`
 
 ```sh

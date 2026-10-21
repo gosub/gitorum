@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/repo"
 	"github.com/gosub/gitorum/internal/store"
 )
@@ -37,11 +36,7 @@ func init() {
 }
 
 func runApprove(cmd *cobra.Command, args []string) error {
-	identPath := approveIdentity
-	if identPath == "" {
-		identPath = crypto.DefaultIdentityPath()
-	}
-	id, err := crypto.LoadIdentity(identPath)
+	id, err := loadIdentity(approveIdentity)
 	if err != nil {
 		return err
 	}

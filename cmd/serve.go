@@ -40,6 +40,19 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
+// loadIdentity loads the identity at path, or at the default location when
+// path is empty.
+func loadIdentity(path string) (*crypto.Identity, error) {
+	if path == "" {
+		path = crypto.DefaultIdentityPath()
+	}
+	id, err := crypto.LoadIdentity(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w (run 'gitorum keygen' first)", err)
+	}
+	return id, nil
+}
+
 func defaultIdentityHint() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
