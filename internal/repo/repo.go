@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -37,10 +38,15 @@ type JoinRequest struct {
 }
 
 // Repo wraps a go-git repository and exposes forum-level operations.
+//
+// A Repo is safe for concurrent use: every exported method holds mu for its
+// whole duration, so git operations (which share one index and worktree) are
+// serialized. Unexported helpers assume mu is already held.
 type Repo struct {
 	// Path is the absolute path to the repository working tree.
 	Path string
 	git  *gogit.Repository
+	mu   sync.Mutex
 }
 
 // Init creates a new forum repository at path.
@@ -96,6 +102,8 @@ func Open(path string) (*Repo, error) {
 
 // ReadMeta reads and returns the forum metadata from GITORUM.toml.
 func (r *Repo) ReadMeta() (*ForumMeta, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var m ForumMeta
 	if _, err := toml.DecodeFile(r.metaPath(), &m); err != nil {
 		return nil, fmt.Errorf("read GITORUM.toml: %w", err)
@@ -106,6 +114,8 @@ func (r *Repo) ReadMeta() (*ForumMeta, error) {
 // AddRemote adds a named remote (e.g. "origin") pointing at url.
 // If a remote with that name already exists it is replaced.
 func (r *Repo) AddRemote(name, url string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	// Remove existing remote if present (ignore error).
 	_ = r.git.DeleteRemote(name)
 	_, err := r.git.CreateRemote(&config.RemoteConfig{
@@ -121,6 +131,8 @@ func (r *Repo) AddRemote(name, url string) error {
 // WritePublicKey writes a user's public key into keys/<username>.pub and
 // stages + commits the change.
 func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := r.writePublicKey(username, pubkeyB64); err != nil {
 		return err
 	}
@@ -131,6 +143,8 @@ func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 str
 // JoinRequests returns all pending join requests: files in requests/ that do
 // not yet have a corresponding entry in keys/.
 func (r *Repo) JoinRequests() ([]JoinRequest, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	reqDir := filepath.Join(r.Path, "requests")
 	entries, err := os.ReadDir(reqDir)
 	if os.IsNotExist(err) {
@@ -169,6 +183,8 @@ func (r *Repo) JoinRequests() ([]JoinRequest, error) {
 // SubmitJoinRequest writes requests/<username>.pub with the identity's public
 // key and commits the change. The caller should call Push() to share it.
 func (r *Repo) SubmitJoinRequest(identity *crypto.Identity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	reqDir := filepath.Join(r.Path, "requests")
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
 		return fmt.Errorf("create requests dir: %w", err)
@@ -185,6 +201,8 @@ func (r *Repo) SubmitJoinRequest(identity *crypto.Identity) error {
 // ApproveJoinRequest moves requests/<username>.pub into keys/ and commits
 // both the addition and the deletion in a single commit.
 func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !forum.ValidUsername(username) {
 		return fmt.Errorf("invalid username %q", username)
 	}
@@ -211,6 +229,8 @@ func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username strin
 
 // RejectJoinRequest deletes requests/<username>.pub and commits the deletion.
 func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !forum.ValidUsername(username) {
 		return fmt.Errorf("invalid username %q", username)
 	}
@@ -227,6 +247,8 @@ func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string
 // CreateCategory creates a new forum category by writing META.toml and
 // committing it to the repository.
 func (r *Repo) CreateCategory(identity *crypto.Identity, slug, name, description string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !forum.ValidSlug(slug) {
 		return fmt.Errorf("invalid category slug %q", slug)
 	}
@@ -244,6 +266,8 @@ func (r *Repo) CreateCategory(identity *crypto.Identity, slug, name, description
 
 // UpdateMeta rewrites GITORUM.toml with new metadata and commits the change.
 func (r *Repo) UpdateMeta(identity *crypto.Identity, meta ForumMeta) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := r.writeMeta(meta); err != nil {
 		return err
 	}
@@ -253,6 +277,8 @@ func (r *Repo) UpdateMeta(identity *crypto.Identity, meta ForumMeta) error {
 // Categories returns the slugs of all forum categories found in the working
 // tree (directories that contain a META.toml file), sorted alphabetically.
 func (r *Repo) Categories() ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	entries, err := os.ReadDir(r.Path)
 	if err != nil {
 		return nil, fmt.Errorf("read repo root: %w", err)
@@ -274,6 +300,8 @@ func (r *Repo) Categories() ([]string, error) {
 // origin and the working tree is clean.  Returns (true, "") when no remote is
 // configured (nothing to sync).
 func (r *Repo) IsSynced() (synced bool, remoteURL string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	cfg, err := r.git.Config()
 	if err != nil {
 		return true, ""
@@ -308,6 +336,8 @@ func (r *Repo) IsSynced() (synced bool, remoteURL string) {
 // CommitPost writes content to relPath (relative to the repo root), stages
 // that single file, and creates a commit.
 func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	absPath := filepath.Join(r.Path, relPath)
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return fmt.Errorf("create dirs for %s: %w", relPath, err)
@@ -340,6 +370,8 @@ func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []b
 // Returns nil when there is no remote configured or the ref is already up to
 // date. Merge conflicts are returned as errors. A 30-second timeout applies.
 func (r *Repo) Pull() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	cfg, err := r.git.Config()
 	if err != nil {
 		return err
@@ -376,6 +408,8 @@ func (r *Repo) Pull() error {
 // remote configured or the ref is already up to date. A 30-second timeout
 // applies.
 func (r *Repo) Push() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	cfg, err := r.git.Config()
 	if err != nil {
 		return err

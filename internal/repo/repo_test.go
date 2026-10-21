@@ -1,6 +1,7 @@
 package repo_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -510,5 +511,41 @@ func checkFile(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected file %s to exist: %v", path, err)
+	}
+}
+
+// ---- concurrency ----
+
+func TestConcurrentCommits(t *testing.T) {
+	id := newIdentity(t, "alice")
+	r, err := repo.Init(t.TempDir(), repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 20
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			rel := filepath.Join("general", "t", fmt.Sprintf("%d_%08x.md", 1700000000000+i, i))
+			errs <- r.CommitPost(id, rel, []byte(fmt.Sprintf("post %d\n", i)))
+		}(i)
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("CommitPost: %v", err)
+		}
+	}
+
+	gr, err := gogit.PlainOpen(r.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := gr.Head()
+	iter, _ := gr.Log(&gogit.LogOptions{From: head.Hash()})
+	count := 0
+	_ = iter.ForEach(func(*object.Commit) error { count++; return nil })
+	if count != n+1 {
+		t.Errorf("commits: got %d, want %d", count, n+1)
 	}
 }
