@@ -13,7 +13,7 @@ import (
 // Only the root post is fully parsed; replies are counted from filenames.
 type ThreadScan struct {
 	Slug        string
-	Root        *Post  // nil if 0000_root.md is missing or unparseable
+	Root        *Post // nil if 0000_root.md is missing or unparseable
 	ReplyCount  int
 	LastReplyAt string // RFC3339 timestamp of newest reply, or root's timestamp
 }

@@ -37,7 +37,7 @@ type rawFrontMatter struct {
 type Post struct {
 	// Front matter fields
 	Author       string
-	PubKey       string    // ed25519 fingerprint (first 8 chars of base64 pubkey)
+	PubKey       string // ed25519 fingerprint (first 8 chars of base64 pubkey)
 	Timestamp    time.Time
 	TimestampRaw string // raw value from file, used verbatim in canonical form
 	Parent       string // sha256 hex of parent file content; empty for root

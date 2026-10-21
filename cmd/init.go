@@ -23,12 +23,12 @@ If no identity file exists one is generated automatically.`,
 }
 
 var (
-	initDir         string
-	initName        string
-	initDescription string
-	initUsername    string
+	initDir          string
+	initName         string
+	initDescription  string
+	initUsername     string
 	initIdentityPath string
-	initRemote      string
+	initRemote       string
 )
 
 func init() {

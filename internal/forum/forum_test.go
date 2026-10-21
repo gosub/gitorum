@@ -114,12 +114,12 @@ func TestParsePost_Errors(t *testing.T) {
 			wantErr: "closing",
 		},
 		{
-			name: "invalid TOML",
+			name:    "invalid TOML",
 			content: "+++\nauthor = [unclosed\n+++\n\nbody",
 			wantErr: "TOML",
 		},
 		{
-			name: "bad timestamp",
+			name:    "bad timestamp",
 			content: "+++\nauthor=\"a\"\npubkey=\"b\"\ntimestamp=\"not-a-time\"\nparent=\"\"\nsignature=\"s\"\n+++\n\nbody",
 			wantErr: "timestamp",
 		},
