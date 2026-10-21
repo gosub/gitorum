@@ -36,6 +36,16 @@ func writeKey(t *testing.T, keysDir, username, pubkeyB64 string) {
 	}
 }
 
+// keyRing loads the key ring from root/keys.
+func keyRing(t *testing.T, root string) *forum.KeyRing {
+	t.Helper()
+	ring, err := forum.LoadKeyRing(os.DirFS(root))
+	if err != nil {
+		t.Fatalf("LoadKeyRing: %v", err)
+	}
+	return ring
+}
+
 // signedPost signs a post and writes it to dir/filename.
 // It returns the raw file bytes so tests can compute PostHash.
 func signedPost(t *testing.T, dir, filename string, id *crypto.Identity, parent, body string) []byte {
@@ -189,14 +199,14 @@ func TestFormat_ParsePost_RoundTrip(t *testing.T) {
 
 func TestVerifySignature_Valid(t *testing.T) {
 	id := mustGenerate(t, "alice")
-	keysDir := t.TempDir()
+	keysDir := filepath.Join(t.TempDir(), "keys")
 	writeKey(t, keysDir, "alice", id.PublicKey)
 
 	post, err := forum.SignPost(id, "", "Hello")
 	if err != nil {
 		t.Fatal(err)
 	}
-	post.VerifySignature(keysDir)
+	post.Verify(keyRing(t, filepath.Dir(keysDir)))
 	if post.SigStatus != forum.SigValid {
 		t.Errorf("SigStatus: got %v, want SigValid; error: %s", post.SigStatus, post.SigError)
 	}
@@ -204,7 +214,7 @@ func TestVerifySignature_Valid(t *testing.T) {
 
 func TestVerifySignature_AfterRoundTrip(t *testing.T) {
 	id := mustGenerate(t, "bob")
-	keysDir := t.TempDir()
+	keysDir := filepath.Join(t.TempDir(), "keys")
 	writeKey(t, keysDir, "bob", id.PublicKey)
 
 	post, _ := forum.SignPost(id, "", "Post content")
@@ -215,7 +225,7 @@ func TestVerifySignature_AfterRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed.VerifySignature(keysDir)
+	parsed.Verify(keyRing(t, filepath.Dir(keysDir)))
 	if parsed.SigStatus != forum.SigValid {
 		t.Errorf("SigStatus after round-trip: %v – %s", parsed.SigStatus, parsed.SigError)
 	}
@@ -223,10 +233,10 @@ func TestVerifySignature_AfterRoundTrip(t *testing.T) {
 
 func TestVerifySignature_MissingKey(t *testing.T) {
 	id := mustGenerate(t, "charlie")
-	keysDir := t.TempDir() // empty – no key file
+	keysDir := filepath.Join(t.TempDir(), "keys") // empty – no key file
 
 	post, _ := forum.SignPost(id, "", "Body")
-	post.VerifySignature(keysDir)
+	post.Verify(keyRing(t, filepath.Dir(keysDir)))
 
 	if post.SigStatus != forum.SigMissing {
 		t.Errorf("SigStatus: got %v, want SigMissing", post.SigStatus)
@@ -235,12 +245,12 @@ func TestVerifySignature_MissingKey(t *testing.T) {
 
 func TestVerifySignature_TamperedBody(t *testing.T) {
 	id := mustGenerate(t, "dave")
-	keysDir := t.TempDir()
+	keysDir := filepath.Join(t.TempDir(), "keys")
 	writeKey(t, keysDir, "dave", id.PublicKey)
 
 	post, _ := forum.SignPost(id, "", "Original body")
 	post.Body = "Tampered body" // change body after signing
-	post.VerifySignature(keysDir)
+	post.Verify(keyRing(t, filepath.Dir(keysDir)))
 
 	if post.SigStatus != forum.SigInvalid {
 		t.Errorf("SigStatus: got %v, want SigInvalid", post.SigStatus)
@@ -250,11 +260,11 @@ func TestVerifySignature_TamperedBody(t *testing.T) {
 func TestVerifySignature_WrongKey(t *testing.T) {
 	id := mustGenerate(t, "eve")
 	otherID := mustGenerate(t, "eve") // different keypair, same username
-	keysDir := t.TempDir()
+	keysDir := filepath.Join(t.TempDir(), "keys")
 	writeKey(t, keysDir, "eve", otherID.PublicKey) // store different key
 
 	post, _ := forum.SignPost(id, "", "Body")
-	post.VerifySignature(keysDir)
+	post.Verify(keyRing(t, filepath.Dir(keysDir)))
 
 	if post.SigStatus != forum.SigInvalid {
 		t.Errorf("SigStatus: got %v, want SigInvalid", post.SigStatus)
@@ -292,7 +302,7 @@ func TestPostHash_Length(t *testing.T) {
 func TestNewPostFilename_Format(t *testing.T) {
 	re := regexp.MustCompile(`^\d{13}_[0-9a-f]{8}\.md$`)
 	for i := 0; i < 5; i++ {
-		name := forum.NewPostFilename("some body text")
+		name := forum.NewPostFilename([]byte("some body text"))
 		if !re.MatchString(name) {
 			t.Errorf("NewPostFilename %q does not match pattern", name)
 		}
@@ -300,8 +310,8 @@ func TestNewPostFilename_Format(t *testing.T) {
 }
 
 func TestNewPostFilename_DifferentBodies(t *testing.T) {
-	n1 := forum.NewPostFilename("body one")
-	n2 := forum.NewPostFilename("body two")
+	n1 := forum.NewPostFilename([]byte("body one"))
+	n2 := forum.NewPostFilename([]byte("body two"))
 	// Hash part (chars 14-21) should differ.
 	if len(n1) > 14 && len(n2) > 14 && n1[14:] == n2[14:] {
 		t.Error("different bodies produced identical filename hash parts")
@@ -312,9 +322,9 @@ func TestNewPostFilename_SameBodyDifferentTime(t *testing.T) {
 	// Two calls with the same body should produce the same hash part but may
 	// differ in the millis prefix.
 	body := "identical"
-	n1 := forum.NewPostFilename(body)
+	n1 := forum.NewPostFilename([]byte(body))
 	time.Sleep(2 * time.Millisecond)
-	n2 := forum.NewPostFilename(body)
+	n2 := forum.NewPostFilename([]byte(body))
 	// Hash part must be identical.
 	if len(n1) >= 14 && len(n2) >= 14 {
 		hash1 := n1[strings.IndexByte(n1, '_')+1:]
@@ -331,12 +341,12 @@ func TestLoadThread_SingleRoot(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "threads", "my-thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	signedPost(t, threadDir, forum.RootFilename, id, "", "Root post body")
 
-	thread, err := forum.LoadThread("general", "my-thread", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatalf("LoadThread: %v", err)
 	}
@@ -358,7 +368,7 @@ func TestLoadThread_RepliesOrderedByTimestamp(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 
@@ -370,11 +380,11 @@ func TestLoadThread_RepliesOrderedByTimestamp(t *testing.T) {
 	for _, body := range bodies {
 		// Ensure distinct unix millis between posts.
 		time.Sleep(2 * time.Millisecond)
-		filename := forum.NewPostFilename(body)
+		filename := forum.NewPostFilename([]byte(body))
 		signedPost(t, threadDir, filename, id, rootHash, body)
 	}
 
-	thread, err := forum.LoadThread("cat", "slug", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,13 +414,13 @@ func TestLoadThread_InvalidSigVisible(t *testing.T) {
 	other := mustGenerate(t, "alice") // different key, same username
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	// Store the "other" key – so alice's actual signature won't verify.
 	writeKey(t, keysDir, "alice", other.PublicKey)
 	signedPost(t, threadDir, forum.RootFilename, id, "", "Body")
 
-	thread, err := forum.LoadThread("cat", "s", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +436,7 @@ func TestLoadThread_SkipsNonMdFiles(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	signedPost(t, threadDir, forum.RootFilename, id, "", "Root")
@@ -434,7 +444,7 @@ func TestLoadThread_SkipsNonMdFiles(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(threadDir, "README.txt"), []byte("ignore me"), 0o644)
 	_ = os.MkdirAll(filepath.Join(threadDir, "subdir"), 0o755)
 
-	thread, err := forum.LoadThread("cat", "s", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,14 +457,14 @@ func TestLoadThread_MissingRoot(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	// Only a reply, no root post.
-	filename := forum.NewPostFilename("reply body")
+	filename := forum.NewPostFilename([]byte("reply body"))
 	signedPost(t, threadDir, filename, id, "somehash", "reply body")
 
-	thread, err := forum.LoadThread("cat", "s", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +505,7 @@ func TestLoadCategory_Basic(t *testing.T) {
 	dir := t.TempDir()
 	setupCategory(t, dir, "general", "General", []string{"thread-a", "thread-b", "thread-c"})
 
-	cat, err := forum.LoadCategory("general", filepath.Join(dir, "general"))
+	cat, err := forum.LoadCategory(os.DirFS(dir), "general")
 	if err != nil {
 		t.Fatalf("LoadCategory: %v", err)
 	}
@@ -529,7 +539,7 @@ func TestLoadCategory_SkipsDirsWithoutRoot(t *testing.T) {
 	rootContent := "+++\nauthor=\"a\"\npubkey=\"b\"\ntimestamp=\"2026-01-01T00:00:00Z\"\nparent=\"\"\nsignature=\"s\"\n+++\n\nbody"
 	_ = os.WriteFile(filepath.Join(validThread, forum.RootFilename), []byte(rootContent), 0o644)
 
-	cat, err := forum.LoadCategory("meta", catDir)
+	cat, err := forum.LoadCategory(os.DirFS(dir), "meta")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +550,7 @@ func TestLoadCategory_SkipsDirsWithoutRoot(t *testing.T) {
 
 func TestLoadCategory_MissingMeta(t *testing.T) {
 	dir := t.TempDir()
-	_, err := forum.LoadCategory("nope", filepath.Join(dir, "nope"))
+	_, err := forum.LoadCategory(os.DirFS(dir), "nope")
 	if err == nil {
 		t.Error("expected error for missing META.toml")
 	}
@@ -552,7 +562,7 @@ func TestLoadCategory_EmptyCategory(t *testing.T) {
 	_ = os.MkdirAll(catDir, 0o755)
 	_ = os.WriteFile(filepath.Join(catDir, "META.toml"), []byte("name=\"Empty\"\ndescription=\"\"\n"), 0o644)
 
-	cat, err := forum.LoadCategory("empty", catDir)
+	cat, err := forum.LoadCategory(os.DirFS(dir), "empty")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +609,7 @@ func TestLoadThread_TombstonedAsPlaceholder(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	rootContent := signedPost(t, threadDir, forum.RootFilename, id, "", "Root post")
@@ -607,11 +617,11 @@ func TestLoadThread_TombstonedAsPlaceholder(t *testing.T) {
 	// Add two replies, using a consistent filename for reply2 to avoid a
 	// timestamp race between the write and the tombstone creation.
 	time.Sleep(2 * time.Millisecond)
-	reply1Name := forum.NewPostFilename("Reply one")
+	reply1Name := forum.NewPostFilename([]byte("Reply one"))
 	signedPost(t, threadDir, reply1Name, id, forum.PostHash(rootContent), "Reply one")
 
 	time.Sleep(2 * time.Millisecond)
-	reply2Name := forum.NewPostFilename("Reply two")
+	reply2Name := forum.NewPostFilename([]byte("Reply two"))
 	reply2Content := signedPost(t, threadDir, reply2Name, id, forum.PostHash(rootContent), "Reply two")
 
 	// Tombstone reply 2.
@@ -619,7 +629,7 @@ func TestLoadThread_TombstonedAsPlaceholder(t *testing.T) {
 	tomb.Filename = forum.TombstoneFilename(reply2Name)
 	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tomb.Format(), 0o644)
 
-	thread, err := forum.LoadThread("cat", "slug", threadDir, keysDir)
+	thread, err := forum.LoadThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatalf("LoadThread: %v", err)
 	}
@@ -648,13 +658,13 @@ func TestScanThread_TombstonedReplyNotCounted(t *testing.T) {
 	id := mustGenerate(t, "alice")
 	dir := t.TempDir()
 	keysDir := filepath.Join(dir, "keys")
-	threadDir := filepath.Join(dir, "thread")
+	threadDir := filepath.Join(dir, "cat", "slug")
 
 	writeKey(t, keysDir, "alice", id.PublicKey)
 	rootContent := signedPost(t, threadDir, forum.RootFilename, id, "", "Root")
 
 	time.Sleep(2 * time.Millisecond)
-	replyName := forum.NewPostFilename("A reply")
+	replyName := forum.NewPostFilename([]byte("A reply"))
 	replyContent := signedPost(t, threadDir, replyName, id, forum.PostHash(rootContent), "A reply")
 
 	// Tombstone the reply.
@@ -662,7 +672,7 @@ func TestScanThread_TombstonedReplyNotCounted(t *testing.T) {
 	tomb.Filename = forum.TombstoneFilename(replyName)
 	_ = os.WriteFile(filepath.Join(threadDir, tomb.Filename), tomb.Format(), 0o644)
 
-	scan, err := forum.ScanThread("slug", threadDir, keysDir)
+	scan, err := forum.ScanThread(os.DirFS(dir), "cat", "slug", keyRing(t, dir))
 	if err != nil {
 		t.Fatalf("ScanThread: %v", err)
 	}

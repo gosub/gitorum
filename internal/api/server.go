@@ -15,6 +15,7 @@ import (
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 )
 
 // DefaultListenHost is the interface the server binds to unless told
@@ -24,19 +25,32 @@ const DefaultListenHost = "127.0.0.1"
 
 // Server holds runtime state for the HTTP server.
 type Server struct {
-	Port       int
-	Host       string // interface to bind; DefaultListenHost when empty
-	RepoPath   string
-	repo       *repo.Repo
+	Port         int
+	Host         string // interface to bind; DefaultListenHost when empty
+	RepoPath     string
+	IdentityPath string // where the setup wizard saves a new identity
+
+	mu         sync.Mutex // guards store, identity, and lastSyncAt
+	store      *store.Store
 	identity   *crypto.Identity
-	mu         sync.Mutex // guards repo, identity, and lastSyncAt
 	lastSyncAt time.Time
 }
 
-// New creates a Server. repo and identity may be nil when the forum has not
-// been initialized yet; handlers degrade gracefully in that case.
+// New creates a Server. r and id may be nil when the forum has not been
+// initialized yet; handlers degrade gracefully in that case.
 func New(port int, repoPath string, r *repo.Repo, id *crypto.Identity) *Server {
-	return &Server{Port: port, RepoPath: repoPath, repo: r, identity: id}
+	s := &Server{Port: port, RepoPath: repoPath, identity: id, IdentityPath: crypto.DefaultIdentityPath()}
+	if r != nil {
+		s.store = store.New(r)
+	}
+	return s
+}
+
+// state returns the current store and identity, either of which may be nil.
+func (s *Server) state() (*store.Store, *crypto.Identity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.store, s.identity
 }
 
 // Handler returns an http.Handler with all routes registered.

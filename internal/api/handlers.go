@@ -1,52 +1,89 @@
 package api
 
 import (
+	"errors"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 )
 
 const maxBodyBytes = 64 << 10 // 64 KB
+
+// storeError maps a store error to an HTTP response.
+func storeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrInvalid):
+		apiError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, store.ErrNotFound):
+		apiError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, store.ErrExists):
+		apiError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, store.ErrForbidden):
+		apiError(w, http.StatusForbidden, err.Error())
+	default:
+		apiError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// ready returns the store and identity, or writes 503 and returns ok=false.
+// When needID is set, a configured identity is required as well.
+func (s *Server) ready(w http.ResponseWriter, needID bool) (*store.Store, *crypto.Identity, bool) {
+	st, id := s.state()
+	if needID && id == nil {
+		apiError(w, http.StatusServiceUnavailable, "no identity configured")
+		return nil, nil, false
+	}
+	if st == nil {
+		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+		return nil, nil, false
+	}
+	return st, id, true
+}
+
+// pushAfterWrite shares a local commit. A failed push is not an error for the
+// write itself (the post is committed locally), but the client is told so it
+// can show that the post has not left the machine yet.
+func pushAfterWrite(w http.ResponseWriter, st *store.Store, status int) {
+	resp := OKResponse{OK: true, Pushed: true}
+	if err := st.Repo().Push(); err != nil {
+		log.Printf("push: %v", err)
+		resp.Pushed = false
+		resp.Message = "saved locally, but push failed: " + err.Error()
+	}
+	writeJSON(w, status, resp)
+}
 
 // GET /api/status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	lastSyncAt := s.lastSyncAt
-	repo := s.repo
-	id := s.identity
 	s.mu.Unlock()
+	st, id := s.state()
 
 	resp := StatusResponse{}
-
 	if id != nil {
 		resp.Username = id.Username
 		resp.PubKey = id.PublicKey
 	}
-
-	if repo != nil {
+	if st != nil {
 		resp.Initialized = true
-		if meta, err := repo.ReadMeta(); err == nil {
+		if meta, err := st.Meta(); err == nil {
 			resp.ForumName = meta.Name
-			if id != nil {
-				resp.IsAdmin = id.PublicKey == meta.AdminPubkey
-			}
 		}
-		resp.Synced, resp.RemoteURL = repo.IsSynced()
+		resp.IsAdmin = st.IsAdmin(id)
+		resp.Synced, resp.RemoteURL = st.Repo().IsSynced()
 	} else {
 		resp.ForumName = "Gitorum"
 		resp.Synced = true
 	}
-
 	if !lastSyncAt.IsZero() {
 		resp.LastSyncAt = lastSyncAt.UTC().Format(time.RFC3339)
 	}
-
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -55,7 +92,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.repo != nil {
+	if s.store != nil {
 		apiError(w, http.StatusConflict, "forum is already initialized")
 		return
 	}
@@ -63,10 +100,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	var req SetupRequest
 	if err := readJSON(r, &req); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	if !forum.ValidUsername(req.Username) {
-		apiError(w, http.StatusBadRequest, "username is required: lowercase letters, digits, - and _")
 		return
 	}
 	if req.ForumName == "" {
@@ -77,150 +110,109 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	// Reuse existing identity or generate a new one.
 	id := s.identity
 	if id == nil {
+		if !forum.ValidUsername(req.Username) {
+			apiError(w, http.StatusBadRequest, "username is required: lowercase letters, digits, - and _")
+			return
+		}
 		generated, err := crypto.Generate(req.Username)
 		if err != nil {
 			apiError(w, http.StatusInternalServerError, "generate identity: "+err.Error())
 			return
 		}
-		identPath := crypto.DefaultIdentityPath()
-		if err := generated.Save(identPath); err != nil {
+		if err := generated.Save(s.IdentityPath); err != nil {
 			apiError(w, http.StatusInternalServerError, "save identity: "+err.Error())
 			return
 		}
 		id = generated
 	}
 
-	meta := repo.ForumMeta{
+	newRepo, err := repo.Init(s.RepoPath, repo.ForumMeta{
 		Name:        req.ForumName,
+		Description: req.Description,
 		AdminPubkey: id.PublicKey,
-	}
-	newRepo, err := repo.Init(s.RepoPath, meta, id)
+	}, id)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "init repo: "+err.Error())
 		return
 	}
 
+	resp := OKResponse{OK: true, Pushed: true}
 	if req.RemoteURL != "" {
 		if err := newRepo.AddRemote("origin", req.RemoteURL); err != nil {
-			log.Printf("handleSetup: add remote: %v", err)
+			resp.Pushed = false
+			resp.Message = "add remote: " + err.Error()
 		} else if err := newRepo.Push(); err != nil {
-			log.Printf("handleSetup: push: %v", err)
+			resp.Pushed = false
+			resp.Message = "forum created, but push failed: " + err.Error()
 		}
 	}
 
 	s.identity = id
-	s.repo = newRepo
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+	s.store = store.New(newRepo)
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// GET /api/sync
+// POST /api/sync
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	if s.repo == nil {
-		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
+	st, id, ok := s.ready(w, false)
+	if !ok {
 		return
 	}
-
-	if err := s.repo.Pull(); err != nil {
-		apiError(w, http.StatusInternalServerError, "pull: "+err.Error())
+	if err := st.Sync(id); err != nil {
+		apiError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-
 	s.mu.Lock()
 	s.lastSyncAt = time.Now()
 	s.mu.Unlock()
-
-	// Auto-approve join requests if the forum is configured to do so and the
-	// running identity is the admin.
-	if s.identity != nil {
-		if meta, err := s.repo.ReadMeta(); err == nil &&
-			meta.AutoApproveKeys &&
-			s.identity.PublicKey == meta.AdminPubkey {
-			if requests, err := s.repo.JoinRequests(); err == nil {
-				for _, req := range requests {
-					if err := s.repo.ApproveJoinRequest(s.identity, req.Username); err != nil {
-						log.Printf("handleSync: auto-approve %s: %v", req.Username, err)
-					} else {
-						log.Printf("handleSync: auto-approved join request from @%s", req.Username)
-					}
-				}
-			}
-		}
-	}
-
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleSync: push: %v", err)
-	}
-
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+	writeJSON(w, http.StatusOK, OKResponse{OK: true, Pushed: true})
 }
 
 // GET /api/categories
 func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
-	if s.repo == nil {
+	st, _ := s.state()
+	if st == nil {
 		writeJSON(w, http.StatusOK, CategoriesResponse{Categories: []CategorySummary{}})
 		return
 	}
-
-	slugs, err := s.repo.Categories()
+	cats, err := st.Categories()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "list categories: "+err.Error())
+		storeError(w, err)
 		return
 	}
-
-	cats := make([]CategorySummary, 0, len(slugs))
-	for _, slug := range slugs {
-		catDir := filepath.Join(s.repo.Path, slug)
-		cat, err := forum.LoadCategory(slug, catDir)
-		if err != nil {
-			log.Printf("handleCategories: skip %q: %v", slug, err)
-			continue
-		}
-		cats = append(cats, CategorySummary{
-			Slug:        cat.Slug,
-			Name:        cat.Name,
-			Description: cat.Description,
-			ThreadCount: len(cat.ThreadSlugs),
+	out := make([]CategorySummary, 0, len(cats))
+	for _, c := range cats {
+		out = append(out, CategorySummary{
+			Slug:        c.Slug,
+			Name:        c.Name,
+			Description: c.Description,
+			ThreadCount: len(c.ThreadSlugs),
 		})
 	}
-	writeJSON(w, http.StatusOK, CategoriesResponse{Categories: cats})
+	writeJSON(w, http.StatusOK, CategoriesResponse{Categories: out})
 }
 
 // GET /api/categories/{cat}/threads
 func (s *Server) handleThreads(w http.ResponseWriter, r *http.Request) {
 	catSlug := r.PathValue("cat")
-	if !forum.ValidSlug(catSlug) {
-		apiError(w, http.StatusNotFound, "category not found")
-		return
-	}
-
-	if s.repo == nil {
+	st, _ := s.state()
+	if st == nil {
 		writeJSON(w, http.StatusOK, ThreadsResponse{
 			Category: catSlug, CategoryName: catSlug, Threads: []ThreadSummary{},
 		})
 		return
 	}
-
-	catDir := filepath.Join(s.repo.Path, catSlug)
-	cat, err := forum.LoadCategory(catSlug, catDir)
+	cat, scans, err := st.Threads(catSlug)
 	if err != nil {
-		apiError(w, http.StatusNotFound, "category not found")
+		storeError(w, err)
 		return
 	}
-
-	keysDir := filepath.Join(s.repo.Path, "keys")
-	summaries := make([]ThreadSummary, 0, len(cat.ThreadSlugs))
-	for _, slug := range cat.ThreadSlugs {
-		threadDir := filepath.Join(catDir, slug)
-		scan, err := forum.ScanThread(slug, threadDir, keysDir)
-		if err != nil {
-			log.Printf("handleThreads: skip thread %q: %v", slug, err)
-			continue
-		}
+	summaries := make([]ThreadSummary, 0, len(scans))
+	for _, scan := range scans {
 		summaries = append(summaries, threadSummaryFrom(scan))
 	}
-
 	writeJSON(w, http.StatusOK, ThreadsResponse{
-		Category:     catSlug,
+		Category:     cat.Slug,
 		CategoryName: cat.Name,
 		Threads:      summaries,
 	})
@@ -228,125 +220,43 @@ func (s *Server) handleThreads(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/threads/{cat}/{thread}
 func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
-	catSlug := r.PathValue("cat")
-	threadSlug := r.PathValue("thread")
-	if !forum.ValidSlug(catSlug) || !forum.ValidSlug(threadSlug) {
-		apiError(w, http.StatusNotFound, "thread not found")
+	st, _, ok := s.ready(w, false)
+	if !ok {
 		return
 	}
-
-	if s.repo == nil {
-		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
-		return
-	}
-
-	threadDir := filepath.Join(s.repo.Path, catSlug, threadSlug)
-	keysDir := filepath.Join(s.repo.Path, "keys")
-
-	thread, err := forum.LoadThread(catSlug, threadSlug, threadDir, keysDir)
+	thread, err := st.Thread(r.PathValue("cat"), r.PathValue("thread"))
 	if err != nil {
-		apiError(w, http.StatusNotFound, "thread not found")
+		storeError(w, err)
 		return
 	}
-
 	posts := make([]PostResponse, 0, len(thread.Posts))
 	for _, p := range thread.Posts {
 		posts = append(posts, postToResponse(p))
 	}
-
 	writeJSON(w, http.StatusOK, ThreadResponse{
-		Category: catSlug,
-		Slug:     threadSlug,
+		Category: thread.Category,
+		Slug:     thread.Slug,
 		Posts:    posts,
 	})
 }
 
 // POST /api/threads/{cat}/{thread}/reply
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
-	catSlug := r.PathValue("cat")
-	threadSlug := r.PathValue("thread")
-	if !forum.ValidSlug(catSlug) || !forum.ValidSlug(threadSlug) {
-		apiError(w, http.StatusNotFound, "thread not found")
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req ReplyRequest
 	if err := readJSON(r, &req); err != nil {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.Body == "" {
-		apiError(w, http.StatusBadRequest, "body is required")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if s.identity == nil {
-		apiError(w, http.StatusServiceUnavailable, "no identity configured")
+	if _, err := st.Reply(id, r.PathValue("cat"), r.PathValue("thread"), req.Body); err != nil {
+		storeError(w, err)
 		return
 	}
-	if s.repo == nil {
-		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
-		return
-	}
-
-	rootPath := filepath.Join(s.repo.Path, catSlug, threadSlug, forum.RootFilename)
-	rootContent, err := os.ReadFile(rootPath)
-	if err != nil {
-		apiError(w, http.StatusNotFound, "thread not found")
-		return
-	}
-
-	post, err := forum.SignPost(s.identity, forum.PostHash(rootContent), req.Body)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "sign post: "+err.Error())
-		return
-	}
-	post.Filename = forum.NewPostFilename(post.Body)
-
-	relPath := filepath.Join(catSlug, threadSlug, post.Filename)
-	if err := s.repo.CommitPost(s.identity, relPath, post.Format()); err != nil {
-		apiError(w, http.StatusInternalServerError, "commit post: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleReply: push: %v", err)
-	}
-	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
-}
-
-// POST /api/categories
-func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
-	var req CreateCategoryRequest
-	if err := readJSON(r, &req); err != nil {
-		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-	if req.Slug == "" || req.Name == "" {
-		apiError(w, http.StatusBadRequest, "slug and name are required")
-		return
-	}
-	if !forum.ValidSlug(req.Slug) {
-		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
-		return
-	}
-	if !s.requireAdmin(w) {
-		return
-	}
-
-	catMetaPath := filepath.Join(s.repo.Path, req.Slug, "META.toml")
-	if _, err := os.Stat(catMetaPath); err == nil {
-		apiError(w, http.StatusConflict, "category slug already exists")
-		return
-	}
-
-	if err := s.repo.CreateCategory(s.identity, req.Slug, req.Name, req.Description); err != nil {
-		apiError(w, http.StatusInternalServerError, "create category: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleCreateCategory: push: %v", err)
-	}
-	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
+	pushAfterWrite(w, st, http.StatusCreated)
 }
 
 // POST /api/threads
@@ -357,73 +267,53 @@ func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.Category == "" || req.Slug == "" || req.Body == "" {
-		apiError(w, http.StatusBadRequest, "category, slug, and body are required")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if !forum.ValidSlug(req.Slug) {
-		apiError(w, http.StatusBadRequest, "slug must be lowercase letters, digits, and hyphens")
+	if err := st.NewThread(id, req.Category, req.Slug, req.Body); err != nil {
+		storeError(w, err)
 		return
 	}
-	if !forum.ValidSlug(req.Category) {
-		apiError(w, http.StatusBadRequest, "category not found: "+req.Category)
-		return
-	}
-	if s.identity == nil {
-		apiError(w, http.StatusServiceUnavailable, "no identity configured")
-		return
-	}
-	if s.repo == nil {
-		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
-		return
-	}
+	pushAfterWrite(w, st, http.StatusCreated)
+}
 
-	catMetaPath := filepath.Join(s.repo.Path, req.Category, "META.toml")
-	if _, err := os.Stat(catMetaPath); err != nil {
-		apiError(w, http.StatusBadRequest, "category not found: "+req.Category)
+// POST /api/categories
+func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
+	var req CreateCategoryRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-
-	threadDir := filepath.Join(s.repo.Path, req.Category, req.Slug)
-	if _, err := os.Stat(threadDir); err == nil {
-		apiError(w, http.StatusConflict, "thread slug already exists")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-
-	post, err := forum.SignPost(s.identity, "", req.Body)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "sign post: "+err.Error())
+	if err := st.CreateCategory(id, req.Slug, req.Name, req.Description); err != nil {
+		storeError(w, err)
 		return
 	}
-	post.Filename = forum.RootFilename
-
-	relPath := filepath.Join(req.Category, req.Slug, forum.RootFilename)
-	if err := s.repo.CommitPost(s.identity, relPath, post.Format()); err != nil {
-		apiError(w, http.StatusInternalServerError, "commit post: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleNewThread: push: %v", err)
-	}
-	writeJSON(w, http.StatusCreated, OKResponse{OK: true})
+	pushAfterWrite(w, st, http.StatusCreated)
 }
 
 // GET /api/admin/requests
 func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w) {
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	requests, err := s.repo.JoinRequests()
+	if !st.IsAdmin(id) {
+		storeError(w, store.ErrForbidden)
+		return
+	}
+	requests, err := st.JoinRequests()
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "list requests: "+err.Error())
+		storeError(w, err)
 		return
 	}
 	summaries := make([]JoinRequestSummary, 0, len(requests))
 	for _, req := range requests {
-		summaries = append(summaries, JoinRequestSummary{
-			Username: req.Username,
-			PubKey:   req.PubKey,
-		})
+		summaries = append(summaries, JoinRequestSummary{Username: req.Username, PubKey: req.PubKey})
 	}
 	writeJSON(w, http.StatusOK, JoinRequestsResponse{Requests: summaries})
 }
@@ -435,25 +325,15 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !forum.ValidUsername(req.Username) {
-		apiError(w, http.StatusBadRequest, "invalid username")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if !s.requireAdmin(w) {
+	if err := st.ApproveJoinRequest(id, req.Username); err != nil {
+		storeError(w, err)
 		return
 	}
-	if s.keyExists(req.Username) {
-		apiError(w, http.StatusConflict, "username @"+req.Username+" already has a key")
-		return
-	}
-	if err := s.repo.ApproveJoinRequest(s.identity, req.Username); err != nil {
-		apiError(w, http.StatusInternalServerError, "approve request: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleApproveRequest: push: %v", err)
-	}
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+	pushAfterWrite(w, st, http.StatusOK)
 }
 
 // POST /api/admin/reject
@@ -463,21 +343,15 @@ func (s *Server) handleRejectRequest(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !forum.ValidUsername(req.Username) {
-		apiError(w, http.StatusBadRequest, "invalid username")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if !s.requireAdmin(w) {
+	if err := st.RejectJoinRequest(id, req.Username); err != nil {
+		storeError(w, err)
 		return
 	}
-	if err := s.repo.RejectJoinRequest(s.identity, req.Username); err != nil {
-		apiError(w, http.StatusInternalServerError, "reject request: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleRejectRequest: push: %v", err)
-	}
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+	pushAfterWrite(w, st, http.StatusOK)
 }
 
 // POST /api/admin/delete
@@ -487,41 +361,15 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Category == "" || req.Thread == "" || req.Filename == "" {
-		apiError(w, http.StatusBadRequest, "category, thread, and filename are required")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if !forum.ValidSlug(req.Category) || !forum.ValidSlug(req.Thread) || !forum.ValidPostFilename(req.Filename) {
-		apiError(w, http.StatusBadRequest, "invalid category, thread, or filename")
+	if err := st.Tombstone(id, req.Category, req.Thread, req.Filename); err != nil {
+		storeError(w, err)
 		return
 	}
-	if !s.requireAdmin(w) {
-		return
-	}
-
-	postPath := filepath.Join(s.repo.Path, req.Category, req.Thread, req.Filename)
-	content, err := os.ReadFile(postPath)
-	if err != nil {
-		apiError(w, http.StatusNotFound, "post not found")
-		return
-	}
-
-	tomb, err := forum.SignTombstone(s.identity, content)
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "sign tombstone: "+err.Error())
-		return
-	}
-	tomb.Filename = forum.TombstoneFilename(req.Filename)
-
-	relPath := filepath.Join(req.Category, req.Thread, tomb.Filename)
-	if err := s.repo.CommitPost(s.identity, relPath, tomb.Format()); err != nil {
-		apiError(w, http.StatusInternalServerError, "commit tombstone: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleAdminDelete: push: %v", err)
-	}
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
+	pushAfterWrite(w, st, http.StatusOK)
 }
 
 // POST /api/admin/addkey
@@ -531,61 +379,17 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Username == "" || req.PubKey == "" {
-		apiError(w, http.StatusBadRequest, "username and pubkey are required")
+	st, id, ok := s.ready(w, true)
+	if !ok {
 		return
 	}
-	if !s.requireAdmin(w) {
+	if !st.IsAdmin(id) {
+		storeError(w, store.ErrForbidden)
 		return
 	}
-	if !forum.ValidUsername(req.Username) {
-		apiError(w, http.StatusBadRequest, "invalid username: use lowercase letters, digits, - and _")
+	if err := st.AddKey(id, req.Username, req.PubKey); err != nil {
+		storeError(w, err)
 		return
 	}
-	if err := crypto.ValidatePublicKey(req.PubKey); err != nil {
-		apiError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.keyExists(req.Username) {
-		apiError(w, http.StatusConflict, "username @"+req.Username+" already has a key")
-		return
-	}
-
-	if err := s.repo.WritePublicKey(s.identity, req.Username, req.PubKey); err != nil {
-		apiError(w, http.StatusInternalServerError, "write public key: "+err.Error())
-		return
-	}
-	if err := s.repo.Push(); err != nil {
-		log.Printf("handleAdminAddKey: push: %v", err)
-	}
-	writeJSON(w, http.StatusOK, OKResponse{OK: true})
-}
-
-// keyExists reports whether keys/<username>.pub is present.
-func (s *Server) keyExists(username string) bool {
-	_, err := os.Stat(filepath.Join(s.repo.Path, "keys", username+".pub"))
-	return err == nil
-}
-
-// requireAdmin checks that s.identity is the forum admin. It writes the
-// appropriate error response and returns false when the check fails.
-func (s *Server) requireAdmin(w http.ResponseWriter) bool {
-	if s.identity == nil {
-		apiError(w, http.StatusServiceUnavailable, "no identity configured")
-		return false
-	}
-	if s.repo == nil {
-		apiError(w, http.StatusServiceUnavailable, "forum not initialized")
-		return false
-	}
-	meta, err := s.repo.ReadMeta()
-	if err != nil {
-		apiError(w, http.StatusInternalServerError, "read meta: "+err.Error())
-		return false
-	}
-	if s.identity.PublicKey != meta.AdminPubkey {
-		apiError(w, http.StatusForbidden, "admin access required")
-		return false
-	}
-	return true
+	pushAfterWrite(w, st, http.StatusOK)
 }

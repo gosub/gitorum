@@ -61,9 +61,10 @@ type StatusResponse struct {
 }
 
 type SetupRequest struct {
-	Username  string `json:"username"`
-	ForumName string `json:"forum_name"`
-	RemoteURL string `json:"remote_url"`
+	Username    string `json:"username"`
+	ForumName   string `json:"forum_name"`
+	Description string `json:"description"`
+	RemoteURL   string `json:"remote_url"`
 }
 
 // ---- request types ---------------------------------------------------------
@@ -112,6 +113,7 @@ type ApproveRejectRequest struct {
 
 type OKResponse struct {
 	OK      bool   `json:"ok"`
+	Pushed  bool   `json:"pushed"` // false when a write was committed locally but not pushed
 	Message string `json:"message,omitempty"`
 }
 

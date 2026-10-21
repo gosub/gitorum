@@ -1,13 +1,18 @@
 // Package repo wraps go-git and provides all git-level operations for gitorum.
+//
+// It knows nothing about posts, keys or categories: it initializes and opens
+// repositories, exposes the HEAD tree as a read-only fs.FS, creates commits,
+// and talks to the origin remote. Forum semantics live in internal/store.
 package repo
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +23,12 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gosub/gitorum/internal/crypto"
-	"github.com/gosub/gitorum/internal/forum"
 )
 
 const gitTimeout = 30 * time.Second
+
+// MetaFile is the forum metadata file at the repository root.
+const MetaFile = "GITORUM.toml"
 
 // ForumMeta is the data stored in GITORUM.toml at the repository root.
 type ForumMeta struct {
@@ -31,10 +38,13 @@ type ForumMeta struct {
 	AutoApproveKeys bool   `toml:"auto_approve_keys"` // approve join requests automatically on sync
 }
 
-// JoinRequest represents a pending key request stored in requests/<username>.pub.
-type JoinRequest struct {
-	Username string
-	PubKey   string
+// Encode serializes the metadata as TOML.
+func (m ForumMeta) Encode() ([]byte, error) {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+		return nil, fmt.Errorf("encode %s: %w", MetaFile, err)
+	}
+	return buf.Bytes(), nil
 }
 
 // Repo wraps a go-git repository and exposes forum-level operations.
@@ -57,33 +67,31 @@ type Repo struct {
 //  3. Creates keys/<username>.pub with the admin's public key
 //  4. Stages both files and creates the first commit
 func Init(path string, meta ForumMeta, identity *crypto.Identity) (*Repo, error) {
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo path: %w", err)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("create repo dir: %w", err)
 	}
 
-	gr, err := gogit.PlainInit(path, false)
+	gr, err := gogit.PlainInit(abs, false)
 	if err != nil {
 		return nil, fmt.Errorf("git init: %w", err)
 	}
+	r := &Repo{Path: abs, git: gr}
 
-	r := &Repo{Path: path, git: gr}
-
-	// Write GITORUM.toml
-	if err := r.writeMeta(meta); err != nil {
+	metaBytes, err := meta.Encode()
+	if err != nil {
 		return nil, err
 	}
-
-	// Write keys/<username>.pub
-	if err := r.writePublicKey(identity.Username, identity.PublicKey); err != nil {
+	files := map[string][]byte{
+		MetaFile:                             metaBytes,
+		"keys/" + identity.Username + ".pub": []byte(identity.PublicKey + "\n"),
+	}
+	if err := r.commit(identity, "init: initialize forum repository", files, nil); err != nil {
 		return nil, err
 	}
-
-	// Stage and commit
-	if err := r.commitFiles(identity, "init: initialize forum repository",
-		"GITORUM.toml", filepath.Join("keys", identity.Username+".pub")); err != nil {
-		return nil, err
-	}
-
 	return r, nil
 }
 
@@ -100,15 +108,56 @@ func Open(path string) (*Repo, error) {
 	return &Repo{Path: abs, git: gr}, nil
 }
 
-// ReadMeta reads and returns the forum metadata from GITORUM.toml.
-func (r *Repo) ReadMeta() (*ForumMeta, error) {
+// Snapshot is a read-only view of the tree at a given commit.
+type Snapshot struct {
+	Hash plumbing.Hash // zero when the repository has no commits yet
+	FS   *TreeFS
+}
+
+// Snapshot returns a view of the current HEAD tree. Forum content is always
+// read from HEAD rather than the working tree, so stray untracked or modified
+// files never show up as posts, and a snapshot never changes underneath a
+// reader.
+func (r *Repo) Snapshot() (*Snapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var m ForumMeta
-	if _, err := toml.DecodeFile(r.metaPath(), &m); err != nil {
-		return nil, fmt.Errorf("read GITORUM.toml: %w", err)
+
+	head, err := r.git.Head()
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return &Snapshot{FS: &TreeFS{r: r}}, nil
 	}
-	return &m, nil
+	if err != nil {
+		return nil, fmt.Errorf("head: %w", err)
+	}
+	commit, err := r.git.CommitObject(head.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("head commit: %w", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("head tree: %w", err)
+	}
+	return &Snapshot{Hash: head.Hash(), FS: &TreeFS{r: r, tree: tree}}, nil
+}
+
+// Head returns the current HEAD commit hash (zero if there are no commits).
+func (r *Repo) Head() plumbing.Hash {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	head, err := r.git.Head()
+	if err != nil {
+		return plumbing.ZeroHash
+	}
+	return head.Hash()
+}
+
+// Commit writes the given files (paths relative to the repo root, using
+// forward slashes), removes the given paths, stages exactly those paths, and
+// creates one commit authored by identity.
+func (r *Repo) Commit(identity *crypto.Identity, message string, write map[string][]byte, remove []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.commit(identity, message, write, remove)
 }
 
 // AddRemote adds a named remote (e.g. "origin") pointing at url.
@@ -128,198 +177,23 @@ func (r *Repo) AddRemote(name, url string) error {
 	return nil
 }
 
-// WritePublicKey writes a user's public key into keys/<username>.pub and
-// stages + commits the change.
-func (r *Repo) WritePublicKey(identity *crypto.Identity, username, pubkeyB64 string) error {
+// RemoteURL returns the URL of origin, or "" when none is configured.
+func (r *Repo) RemoteURL() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.writePublicKey(username, pubkeyB64); err != nil {
-		return err
-	}
-	return r.commitFiles(identity, fmt.Sprintf("keys: add public key for %s", username),
-		filepath.Join("keys", username+".pub"))
-}
-
-// JoinRequests returns all pending join requests: files in requests/ that do
-// not yet have a corresponding entry in keys/.
-func (r *Repo) JoinRequests() ([]JoinRequest, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	reqDir := filepath.Join(r.Path, "requests")
-	entries, err := os.ReadDir(reqDir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read requests dir: %w", err)
-	}
-
-	var out []JoinRequest
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".pub") {
-			continue
-		}
-		username := strings.TrimSuffix(name, ".pub")
-		if !forum.ValidUsername(username) {
-			continue
-		}
-		// Skip if already approved.
-		if _, err := os.Stat(filepath.Join(r.Path, "keys", name)); err == nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(reqDir, name))
-		if err != nil {
-			continue
-		}
-		out = append(out, JoinRequest{
-			Username: username,
-			PubKey:   strings.TrimSpace(string(data)),
-		})
-	}
-	return out, nil
-}
-
-// SubmitJoinRequest writes requests/<username>.pub with the identity's public
-// key and commits the change. The caller should call Push() to share it.
-func (r *Repo) SubmitJoinRequest(identity *crypto.Identity) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	reqDir := filepath.Join(r.Path, "requests")
-	if err := os.MkdirAll(reqDir, 0o755); err != nil {
-		return fmt.Errorf("create requests dir: %w", err)
-	}
-	relPath := filepath.Join("requests", identity.Username+".pub")
-	absPath := filepath.Join(r.Path, relPath)
-	if err := os.WriteFile(absPath, []byte(identity.PublicKey+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write request file: %w", err)
-	}
-	return r.commitFiles(identity,
-		fmt.Sprintf("request: join request from %s", identity.Username), relPath)
-}
-
-// ApproveJoinRequest moves requests/<username>.pub into keys/ and commits
-// both the addition and the deletion in a single commit.
-func (r *Repo) ApproveJoinRequest(adminIdentity *crypto.Identity, username string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !forum.ValidUsername(username) {
-		return fmt.Errorf("invalid username %q", username)
-	}
-	reqRelPath := filepath.Join("requests", username+".pub")
-	reqAbsPath := filepath.Join(r.Path, reqRelPath)
-
-	data, err := os.ReadFile(reqAbsPath)
-	if err != nil {
-		return fmt.Errorf("read request file: %w", err)
-	}
-
-	if err := r.writePublicKey(username, strings.TrimSpace(string(data))); err != nil {
-		return err
-	}
-	if err := os.Remove(reqAbsPath); err != nil {
-		return fmt.Errorf("remove request file: %w", err)
-	}
-
-	return r.commitFiles(adminIdentity,
-		fmt.Sprintf("keys: approve join request from %s", username),
-		filepath.Join("keys", username+".pub"),
-		reqRelPath)
-}
-
-// RejectJoinRequest deletes requests/<username>.pub and commits the deletion.
-func (r *Repo) RejectJoinRequest(adminIdentity *crypto.Identity, username string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !forum.ValidUsername(username) {
-		return fmt.Errorf("invalid username %q", username)
-	}
-	reqRelPath := filepath.Join("requests", username+".pub")
-	reqAbsPath := filepath.Join(r.Path, reqRelPath)
-
-	if err := os.Remove(reqAbsPath); err != nil {
-		return fmt.Errorf("remove request file: %w", err)
-	}
-	return r.commitFiles(adminIdentity,
-		fmt.Sprintf("request: reject join request from %s", username), reqRelPath)
-}
-
-// CreateCategory creates a new forum category by writing META.toml and
-// committing it to the repository.
-func (r *Repo) CreateCategory(identity *crypto.Identity, slug, name, description string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !forum.ValidSlug(slug) {
-		return fmt.Errorf("invalid category slug %q", slug)
-	}
-	catDir := filepath.Join(r.Path, slug)
-	if err := os.MkdirAll(catDir, 0o755); err != nil {
-		return fmt.Errorf("create category dir: %w", err)
-	}
-	content := fmt.Sprintf("name = %q\ndescription = %q\n", name, description)
-	if err := os.WriteFile(filepath.Join(catDir, "META.toml"), []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write META.toml: %w", err)
-	}
-	return r.commitFiles(identity, fmt.Sprintf("category: add %s", slug),
-		filepath.Join(slug, "META.toml"))
-}
-
-// UpdateMeta rewrites GITORUM.toml with new metadata and commits the change.
-func (r *Repo) UpdateMeta(identity *crypto.Identity, meta ForumMeta) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.writeMeta(meta); err != nil {
-		return err
-	}
-	return r.commitFiles(identity, "config: update forum metadata", "GITORUM.toml")
-}
-
-// Categories returns the slugs of all forum categories found in the working
-// tree (directories that contain a META.toml file), sorted alphabetically.
-func (r *Repo) Categories() ([]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	entries, err := os.ReadDir(r.Path)
-	if err != nil {
-		return nil, fmt.Errorf("read repo root: %w", err)
-	}
-	var cats []string
-	for _, e := range entries {
-		if !e.IsDir() || !forum.ValidSlug(e.Name()) {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(r.Path, e.Name(), "META.toml")); err == nil {
-			cats = append(cats, e.Name())
-		}
-	}
-	sort.Strings(cats)
-	return cats, nil
+	return r.remoteURL()
 }
 
 // IsSynced reports whether the local HEAD matches the remote tracking ref for
-// origin and the working tree is clean.  Returns (true, "") when no remote is
-// configured (nothing to sync).
+// origin. Returns (true, "") when no remote is configured (nothing to sync).
 func (r *Repo) IsSynced() (synced bool, remoteURL string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cfg, err := r.git.Config()
-	if err != nil {
+
+	remoteURL = r.remoteURL()
+	if remoteURL == "" {
 		return true, ""
 	}
-	origin, ok := cfg.Remotes["origin"]
-	if !ok || len(origin.URLs) == 0 {
-		return true, ""
-	}
-	remoteURL = origin.URLs[0]
-
-	// Check for uncommitted changes first.
-	wt, err := r.git.Worktree()
-	if err == nil {
-		if status, err := wt.Status(); err == nil && !status.IsClean() {
-			return false, remoteURL
-		}
-	}
-
 	head, err := r.git.Head()
 	if err != nil {
 		return false, remoteURL
@@ -333,58 +207,20 @@ func (r *Repo) IsSynced() (synced bool, remoteURL string) {
 	return head.Hash() == remoteRef.Hash(), remoteURL
 }
 
-// CommitPost writes content to relPath (relative to the repo root), stages
-// that single file, and creates a commit.
-func (r *Repo) CommitPost(identity *crypto.Identity, relPath string, content []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	absPath := filepath.Join(r.Path, relPath)
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		return fmt.Errorf("create dirs for %s: %w", relPath, err)
-	}
-	if err := os.WriteFile(absPath, content, 0o644); err != nil {
-		return fmt.Errorf("write post file: %w", err)
-	}
-	wt, err := r.git.Worktree()
-	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
-	}
-	if _, err := wt.Add(relPath); err != nil {
-		return fmt.Errorf("git add %s: %w", relPath, err)
-	}
-	sig := &object.Signature{
-		Name:  identity.Username,
-		Email: identity.Username + "@gitorum.local",
-		When:  time.Now(),
-	}
-	if _, err := wt.Commit("post: add "+relPath, &gogit.CommitOptions{
-		Author:    sig,
-		Committer: sig,
-	}); err != nil {
-		return fmt.Errorf("git commit: %w", err)
-	}
-	return nil
-}
-
 // Pull fetches from origin and fast-forward merges into the current branch.
 // Returns nil when there is no remote configured or the ref is already up to
 // date. Merge conflicts are returned as errors. A 30-second timeout applies.
 func (r *Repo) Pull() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cfg, err := r.git.Config()
-	if err != nil {
-		return err
-	}
-	if _, ok := cfg.Remotes["origin"]; !ok {
+
+	if r.remoteURL() == "" {
 		return nil
 	}
-
 	head, err := r.git.Head()
 	if err != nil {
 		return fmt.Errorf("head: %w", err)
 	}
-
 	wt, err := r.git.Worktree()
 	if err != nil {
 		return fmt.Errorf("worktree: %w", err)
@@ -396,7 +232,6 @@ func (r *Repo) Pull() error {
 	err = wt.PullContext(ctx, &gogit.PullOptions{
 		RemoteName:    "origin",
 		ReferenceName: head.Name(),
-		Force:         false,
 	})
 	if err == gogit.NoErrAlreadyUpToDate {
 		return nil
@@ -410,70 +245,72 @@ func (r *Repo) Pull() error {
 func (r *Repo) Push() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cfg, err := r.git.Config()
-	if err != nil {
-		return err
-	}
-	if _, ok := cfg.Remotes["origin"]; !ok {
+
+	if r.remoteURL() == "" {
 		return nil
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
-	err = r.git.PushContext(ctx, &gogit.PushOptions{RemoteName: "origin"})
+	err := r.git.PushContext(ctx, &gogit.PushOptions{RemoteName: "origin"})
 	if err == nil || err == gogit.NoErrAlreadyUpToDate {
 		return nil
 	}
 	return err
 }
 
-// Git returns the underlying go-git repository for advanced callers.
-func (r *Repo) Git() *gogit.Repository { return r.git }
-
 // ---- internal helpers ----
 
-func (r *Repo) metaPath() string {
-	return filepath.Join(r.Path, "GITORUM.toml")
-}
-
-func (r *Repo) writeMeta(meta ForumMeta) error {
-	f, err := os.Create(r.metaPath())
+func (r *Repo) remoteURL() string {
+	cfg, err := r.git.Config()
 	if err != nil {
-		return fmt.Errorf("create GITORUM.toml: %w", err)
+		return ""
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(meta)
+	origin, ok := cfg.Remotes["origin"]
+	if !ok || len(origin.URLs) == 0 {
+		return ""
+	}
+	return origin.URLs[0]
 }
 
-func (r *Repo) writePublicKey(username, pubkeyB64 string) error {
-	if !forum.ValidUsername(username) {
-		return fmt.Errorf("invalid username %q", username)
-	}
-	dir := filepath.Join(r.Path, "keys")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create keys dir: %w", err)
-	}
-	path := filepath.Join(dir, username+".pub")
-	return os.WriteFile(path, []byte(pubkeyB64+"\n"), 0o644)
-}
-
-// commitFiles stages the specified relative paths and creates a commit.
-func (r *Repo) commitFiles(identity *crypto.Identity, message string, relPaths ...string) error {
-	wt, err := r.git.Worktree()
-	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
-	}
-	for _, p := range relPaths {
-		if _, err := wt.Add(p); err != nil {
-			return fmt.Errorf("git add %s: %w", p, err)
-		}
-	}
-	sig := &object.Signature{
+func signature(identity *crypto.Identity) *object.Signature {
+	return &object.Signature{
 		Name:  identity.Username,
 		Email: identity.Username + "@gitorum.local",
 		When:  time.Now(),
 	}
+}
+
+func (r *Repo) commit(identity *crypto.Identity, message string, write map[string][]byte, remove []string) error {
+	wt, err := r.git.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+
+	paths := make([]string, 0, len(write))
+	for p := range write {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		abs := filepath.Join(r.Path, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return fmt.Errorf("create dirs for %s: %w", p, err)
+		}
+		if err := os.WriteFile(abs, write[p], 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", p, err)
+		}
+		if _, err := wt.Add(p); err != nil {
+			return fmt.Errorf("git add %s: %w", p, err)
+		}
+	}
+	for _, p := range remove {
+		if _, err := wt.Remove(p); err != nil {
+			return fmt.Errorf("git rm %s: %w", p, err)
+		}
+	}
+
+	sig := signature(identity)
 	if _, err := wt.Commit(message, &gogit.CommitOptions{
 		Author:    sig,
 		Committer: sig,

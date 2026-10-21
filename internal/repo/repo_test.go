@@ -2,11 +2,12 @@ package repo_test
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+	"testing/fstest"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -15,7 +16,7 @@ import (
 	"github.com/gosub/gitorum/internal/repo"
 )
 
-// newIdentity is a test helper that panics on failure.
+// newIdentity is a test helper that fails the test on error.
 func newIdentity(t *testing.T, username string) *crypto.Identity {
 	t.Helper()
 	id, err := crypto.Generate(username)
@@ -35,268 +36,181 @@ func newBareRemote(t *testing.T) string {
 	return dir
 }
 
-// ---- Init ----
-
-func TestInit_CreatesFiles(t *testing.T) {
-	id := newIdentity(t, "alice")
-	dir := t.TempDir()
-
-	meta := repo.ForumMeta{
-		Name:        "Test Forum",
-		Description: "A forum for tests",
-		AdminPubkey: id.PublicKey,
-	}
-	r, err := repo.Init(dir, meta, id)
+func newForum(t *testing.T, username string) (*repo.Repo, *crypto.Identity) {
+	t.Helper()
+	id := newIdentity(t, username)
+	r, err := repo.Init(t.TempDir(), repo.ForumMeta{Name: "Forum", AdminPubkey: id.PublicKey}, id)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if r.Path == "" {
-		t.Fatal("Repo.Path is empty")
-	}
+	return r, id
+}
 
-	// GITORUM.toml must exist
-	checkFile(t, filepath.Join(dir, "GITORUM.toml"))
-
-	// keys/alice.pub must exist
-	pubPath := filepath.Join(dir, "keys", "alice.pub")
-	checkFile(t, pubPath)
-
-	// keys/alice.pub must contain the public key
-	data, err := os.ReadFile(pubPath)
+func headCommit(t *testing.T, path string) *object.Commit {
+	t.Helper()
+	gr, err := gogit.PlainOpen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), id.PublicKey) {
-		t.Errorf("keys/alice.pub does not contain the public key")
-	}
-}
-
-func TestInit_ReadMeta(t *testing.T) {
-	id := newIdentity(t, "bob")
-	dir := t.TempDir()
-
-	want := repo.ForumMeta{
-		Name:        "Bob's Forum",
-		Description: "Bob speaks",
-		AdminPubkey: id.PublicKey,
-	}
-	r, err := repo.Init(dir, want, id)
-	if err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	got, err := r.ReadMeta()
-	if err != nil {
-		t.Fatalf("ReadMeta: %v", err)
-	}
-	if got.Name != want.Name {
-		t.Errorf("Name: got %q, want %q", got.Name, want.Name)
-	}
-	if got.Description != want.Description {
-		t.Errorf("Description: got %q, want %q", got.Description, want.Description)
-	}
-	if got.AdminPubkey != want.AdminPubkey {
-		t.Errorf("AdminPubkey mismatch")
-	}
-}
-
-func TestInit_InitialCommit(t *testing.T) {
-	id := newIdentity(t, "carol")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "Forum", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	gr := r.Git()
 	ref, err := gr.Head()
 	if err != nil {
 		t.Fatalf("Head: %v", err)
 	}
-	commit, err := gr.CommitObject(ref.Hash())
+	c, err := gr.CommitObject(ref.Hash())
 	if err != nil {
 		t.Fatalf("CommitObject: %v", err)
 	}
+	return c
+}
 
-	if !strings.Contains(commit.Message, "init:") {
+func countCommits(t *testing.T, path string) int {
+	t.Helper()
+	gr, err := gogit.PlainOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := gr.Head()
+	iter, _ := gr.Log(&gogit.LogOptions{From: head.Hash()})
+	n := 0
+	_ = iter.ForEach(func(*object.Commit) error { n++; return nil })
+	return n
+}
+
+// ---- Init / Open ----
+
+func TestInit_InitialCommit(t *testing.T) {
+	r, id := newForum(t, "carol")
+
+	commit := headCommit(t, r.Path)
+	if !strings.HasPrefix(commit.Message, "init:") {
 		t.Errorf("commit message: got %q, want prefix 'init:'", commit.Message)
 	}
 	if commit.Author.Name != "carol" {
-		t.Errorf("author: got %q, want %q", commit.Author.Name, "carol")
+		t.Errorf("author: got %q, want carol", commit.Author.Name)
 	}
-
-	// Must be the only commit (no parent)
 	if len(commit.ParentHashes) != 0 {
 		t.Errorf("expected 0 parents, got %d", len(commit.ParentHashes))
 	}
-}
 
-func TestInit_InitialCommitContainsExpectedFiles(t *testing.T) {
-	id := newIdentity(t, "diana")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
+	snap, err := r.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	gr := r.Git()
-	ref, _ := gr.Head()
-	commit, _ := gr.CommitObject(ref.Hash())
-	tree, err := commit.Tree()
+	key, err := fs.ReadFile(snap.FS, "keys/carol.pub")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("keys/carol.pub not in initial commit: %v", err)
 	}
-
-	wantFiles := []string{"GITORUM.toml", "keys/diana.pub"}
-	for _, name := range wantFiles {
-		if _, err := tree.File(name); err != nil {
-			t.Errorf("file %q not in initial commit: %v", name, err)
-		}
+	if strings.TrimSpace(string(key)) != id.PublicKey {
+		t.Error("keys/carol.pub does not contain the public key")
+	}
+	meta, err := fs.ReadFile(snap.FS, repo.MetaFile)
+	if err != nil {
+		t.Fatalf("%s not in initial commit: %v", repo.MetaFile, err)
+	}
+	if !strings.Contains(string(meta), id.PublicKey) {
+		t.Errorf("%s does not contain the admin key", repo.MetaFile)
 	}
 }
 
-// ---- Open ----
-
-func TestOpen_ExistingRepo(t *testing.T) {
-	id := newIdentity(t, "eve")
-	dir := t.TempDir()
-
-	_, err := repo.Init(dir, repo.ForumMeta{Name: "Eve's", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r2, err := repo.Open(dir)
+func TestOpen(t *testing.T) {
+	r, _ := newForum(t, "eve")
+	r2, err := repo.Open(r.Path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	meta, err := r2.ReadMeta()
-	if err != nil {
-		t.Fatal(err)
+	if r2.Head() != r.Head() {
+		t.Error("reopened repo has a different HEAD")
 	}
-	if meta.Name != "Eve's" {
-		t.Errorf("Name: got %q", meta.Name)
+	if _, err := repo.Open("/nonexistent/path/gitorum"); err == nil {
+		t.Error("expected error opening non-existent repo")
 	}
 }
 
-func TestOpen_NonExistentRepo(t *testing.T) {
-	_, err := repo.Open("/nonexistent/path/gitorum")
-	if err == nil {
-		t.Error("expected error opening non-existent repo")
+// ---- Snapshot / TreeFS ----
+
+func TestSnapshot_ReadsHeadNotWorktree(t *testing.T) {
+	r, id := newForum(t, "alice")
+	if err := r.Commit(id, "add", map[string][]byte{
+		"general/META.toml":           []byte("name = \"General\"\n"),
+		"general/hello/0000_root.md":  []byte("root"),
+		"general/hello/1_deadbeef.md": []byte("reply"),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Untracked and modified working-tree files must not be visible.
+	_ = os.WriteFile(filepath.Join(r.Path, "general", "hello", "2_cafebabe.md"), []byte("untracked"), 0o644)
+	_ = os.WriteFile(filepath.Join(r.Path, "general", "hello", "0000_root.md"), []byte("tampered"), 0o644)
+
+	snap, err := r.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fstest.TestFS(snap.FS,
+		"GITORUM.toml", "keys/alice.pub", "general/META.toml",
+		"general/hello/0000_root.md", "general/hello/1_deadbeef.md"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := fs.ReadFile(snap.FS, "general/hello/0000_root.md")
+	if string(got) != "root" {
+		t.Errorf("root: got %q, want committed content", got)
+	}
+	if _, err := fs.Stat(snap.FS, "general/hello/2_cafebabe.md"); err == nil {
+		t.Error("untracked file visible in snapshot")
+	}
+	if _, err := fs.ReadFile(snap.FS, "../GITORUM.toml"); err == nil {
+		t.Error("invalid path accepted")
+	}
+}
+
+// ---- Commit ----
+
+func TestCommit_WriteAndRemove(t *testing.T) {
+	r, id := newForum(t, "alice")
+	if err := r.Commit(id, "add", map[string][]byte{"requests/bob.pub": []byte("K\n")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Commit(id, "move", map[string][]byte{"keys/bob.pub": []byte("K\n")},
+		[]string{"requests/bob.pub"}); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := r.Snapshot()
+	if _, err := fs.Stat(snap.FS, "requests/bob.pub"); err == nil {
+		t.Error("requests/bob.pub still present")
+	}
+	if _, err := fs.Stat(snap.FS, "keys/bob.pub"); err != nil {
+		t.Error("keys/bob.pub missing")
+	}
+	if c := headCommit(t, r.Path); c.Message != "move" || c.Author.Name != "alice" {
+		t.Errorf("commit: %q by %q", c.Message, c.Author.Name)
+	}
+	if n := countCommits(t, r.Path); n != 3 {
+		t.Errorf("commits: got %d, want 3", n)
 	}
 }
 
 // ---- AddRemote ----
 
-func TestAddRemote(t *testing.T) {
-	id := newIdentity(t, "frank")
-	dir := t.TempDir()
-	remote := newBareRemote(t)
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.AddRemote("origin", remote); err != nil {
+func TestAddRemote_Replaces(t *testing.T) {
+	r, _ := newForum(t, "frank")
+	remote1, remote2 := newBareRemote(t), newBareRemote(t)
+	if err := r.AddRemote("origin", remote1); err != nil {
 		t.Fatalf("AddRemote: %v", err)
 	}
-
-	remotes, err := r.Git().Remotes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(remotes) != 1 {
-		t.Fatalf("expected 1 remote, got %d", len(remotes))
-	}
-	if remotes[0].Config().Name != "origin" {
-		t.Errorf("remote name: got %q, want %q", remotes[0].Config().Name, "origin")
-	}
-	if remotes[0].Config().URLs[0] != remote {
-		t.Errorf("remote URL: got %q, want %q", remotes[0].Config().URLs[0], remote)
-	}
-}
-
-func TestAddRemote_Idempotent(t *testing.T) {
-	id := newIdentity(t, "grace")
-	dir := t.TempDir()
-	remote := newBareRemote(t)
-
-	r, _ := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
-	_ = r.AddRemote("origin", remote)
-
-	remote2 := newBareRemote(t)
 	if err := r.AddRemote("origin", remote2); err != nil {
 		t.Fatalf("AddRemote (replace): %v", err)
 	}
-
-	remotes, _ := r.Git().Remotes()
-	if len(remotes) != 1 {
-		t.Fatalf("expected 1 remote after replace, got %d", len(remotes))
-	}
-	if remotes[0].Config().URLs[0] != remote2 {
-		t.Error("remote URL not updated")
+	if got := r.RemoteURL(); got != remote2 {
+		t.Errorf("RemoteURL: got %q, want %q", got, remote2)
 	}
 }
 
-// ---- WritePublicKey ----
+// ---- Pull / Push ----
 
-func TestWritePublicKey(t *testing.T) {
-	adminID := newIdentity(t, "admin")
-	userID := newIdentity(t, "heidi")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: adminID.PublicKey}, adminID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.WritePublicKey(adminID, userID.Username, userID.PublicKey); err != nil {
-		t.Fatalf("WritePublicKey: %v", err)
-	}
-
-	pubPath := filepath.Join(dir, "keys", "heidi.pub")
-	data, err := os.ReadFile(pubPath)
-	if err != nil {
-		t.Fatalf("read heidi.pub: %v", err)
-	}
-	if !strings.Contains(string(data), userID.PublicKey) {
-		t.Error("heidi.pub does not contain user's public key")
-	}
-
-	// Must have a second commit for the key addition
-	gr := r.Git()
-	log, err := gr.Log(&gogit.LogOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var commits []*object.Commit
-	_ = log.ForEach(func(c *object.Commit) error {
-		commits = append(commits, c)
-		return nil
-	})
-	if len(commits) != 2 {
-		t.Errorf("expected 2 commits, got %d", len(commits))
-	}
-	if !strings.Contains(commits[0].Message, "heidi") {
-		t.Errorf("key commit message: got %q", commits[0].Message)
-	}
-}
-
-// ---- PullPush ----
-
-// TestRepo_PullPush verifies the full sync cycle: push initial state, have
+// TestRepo_PullPush verifies the basic sync cycle: push initial state, have
 // another user push a new commit, then pull and verify the new file appears.
 func TestRepo_PullPush(t *testing.T) {
-	id := newIdentity(t, "alice")
-	dir := t.TempDir()
+	r, _ := newForum(t, "alice")
 	bare := newBareRemote(t)
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "Forum", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
 	if err := r.AddRemote("origin", bare); err != nil {
 		t.Fatalf("AddRemote: %v", err)
 	}
@@ -306,246 +220,61 @@ func TestRepo_PullPush(t *testing.T) {
 
 	// Bob clones the bare remote, adds a file, and pushes back.
 	bobDir := t.TempDir()
-	bobGr, err := gogit.PlainClone(bobDir, false, &gogit.CloneOptions{URL: bare})
-	if err != nil {
+	if _, err := gogit.PlainClone(bobDir, false, &gogit.CloneOptions{URL: bare}); err != nil {
 		t.Fatalf("PlainClone: %v", err)
 	}
-
-	postDir := filepath.Join(bobDir, "general", "bobs-post")
-	if err := os.MkdirAll(postDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(postDir, "0000_root.md"), []byte("hello from bob"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	bobWt, err := bobGr.Worktree()
+	bob, err := repo.Open(bobDir)
 	if err != nil {
-		t.Fatalf("bob worktree: %v", err)
+		t.Fatal(err)
 	}
-	if err := bobWt.AddGlob("."); err != nil {
-		t.Fatalf("bob add: %v", err)
+	if err := bob.Commit(newIdentity(t, "bob"), "post", map[string][]byte{
+		"general/bobs-post/0000_root.md": []byte("hello from bob"),
+	}, nil); err != nil {
+		t.Fatal(err)
 	}
-	bobSig := &object.Signature{Name: "bob", Email: "bob@gitorum.local", When: time.Now()}
-	if _, err := bobWt.Commit("post: add bobs-post", &gogit.CommitOptions{
-		Author: bobSig, Committer: bobSig,
-	}); err != nil {
-		t.Fatalf("bob commit: %v", err)
-	}
-	if err := bobGr.Push(&gogit.PushOptions{RemoteName: "origin"}); err != nil {
+	if err := bob.Push(); err != nil {
 		t.Fatalf("bob push: %v", err)
 	}
 
-	// Alice pulls.
 	if err := r.Pull(); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
-
-	// The file Bob pushed must now exist in Alice's working tree.
-	pulled := filepath.Join(dir, "general", "bobs-post", "0000_root.md")
-	if _, err := os.Stat(pulled); err != nil {
-		t.Errorf("expected pulled file at %s: %v", pulled, err)
+	snap, _ := r.Snapshot()
+	if _, err := fs.Stat(snap.FS, "general/bobs-post/0000_root.md"); err != nil {
+		t.Errorf("pulled file missing: %v", err)
 	}
-
-	// Pull again — must be a no-op (already up to date).
 	if err := r.Pull(); err != nil {
 		t.Errorf("second Pull (already up to date): %v", err)
-	}
-}
-
-// ---- JoinRequests ----
-
-func TestJoinRequests_Empty(t *testing.T) {
-	id := newIdentity(t, "admin")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reqs, err := r.JoinRequests()
-	if err != nil {
-		t.Fatalf("JoinRequests: %v", err)
-	}
-	if len(reqs) != 0 {
-		t.Errorf("expected 0 requests, got %d", len(reqs))
-	}
-}
-
-func TestSubmitJoinRequest(t *testing.T) {
-	admin := newIdentity(t, "admin")
-	bob := newIdentity(t, "bob")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := r.SubmitJoinRequest(bob); err != nil {
-		t.Fatalf("SubmitJoinRequest: %v", err)
-	}
-
-	// File must exist on disk.
-	reqPath := filepath.Join(dir, "requests", "bob.pub")
-	data, err := os.ReadFile(reqPath)
-	if err != nil {
-		t.Fatalf("requests/bob.pub missing: %v", err)
-	}
-	if !strings.Contains(string(data), bob.PublicKey) {
-		t.Error("requests/bob.pub does not contain bob's public key")
-	}
-
-	// Must appear in JoinRequests.
-	reqs, err := r.JoinRequests()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reqs) != 1 || reqs[0].Username != "bob" {
-		t.Errorf("JoinRequests: got %v", reqs)
-	}
-}
-
-func TestApproveJoinRequest(t *testing.T) {
-	admin := newIdentity(t, "admin")
-	bob := newIdentity(t, "bob")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.SubmitJoinRequest(bob); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := r.ApproveJoinRequest(admin, "bob"); err != nil {
-		t.Fatalf("ApproveJoinRequest: %v", err)
-	}
-
-	// keys/bob.pub must exist.
-	keyPath := filepath.Join(dir, "keys", "bob.pub")
-	if _, err := os.Stat(keyPath); err != nil {
-		t.Errorf("keys/bob.pub missing after approve: %v", err)
-	}
-
-	// requests/bob.pub must be gone.
-	reqPath := filepath.Join(dir, "requests", "bob.pub")
-	if _, err := os.Stat(reqPath); err == nil {
-		t.Error("requests/bob.pub still exists after approve")
-	}
-
-	// Must no longer appear in JoinRequests.
-	reqs, _ := r.JoinRequests()
-	for _, req := range reqs {
-		if req.Username == "bob" {
-			t.Error("bob still appears in JoinRequests after approval")
-		}
-	}
-}
-
-func TestRejectJoinRequest(t *testing.T) {
-	admin := newIdentity(t, "admin")
-	bob := newIdentity(t, "bob")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.SubmitJoinRequest(bob); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := r.RejectJoinRequest(admin, "bob"); err != nil {
-		t.Fatalf("RejectJoinRequest: %v", err)
-	}
-
-	// requests/bob.pub must be gone.
-	reqPath := filepath.Join(dir, "requests", "bob.pub")
-	if _, err := os.Stat(reqPath); err == nil {
-		t.Error("requests/bob.pub still exists after rejection")
-	}
-	// keys/bob.pub must NOT have been created.
-	if _, err := os.Stat(filepath.Join(dir, "keys", "bob.pub")); err == nil {
-		t.Error("keys/bob.pub should not exist after rejection")
-	}
-}
-
-func TestJoinRequests_SkipsApproved(t *testing.T) {
-	admin := newIdentity(t, "admin")
-	bob := newIdentity(t, "bob")
-	dir := t.TempDir()
-
-	r, err := repo.Init(dir, repo.ForumMeta{Name: "F", AdminPubkey: admin.PublicKey}, admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.SubmitJoinRequest(bob); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.ApproveJoinRequest(admin, "bob"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Now add another request and approve it too, to ensure the count is right.
-	charlie := newIdentity(t, "charlie")
-	if err := r.SubmitJoinRequest(charlie); err != nil {
-		t.Fatal(err)
-	}
-
-	// Only charlie should appear (bob is approved).
-	reqs, err := r.JoinRequests()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reqs) != 1 || reqs[0].Username != "charlie" {
-		t.Errorf("JoinRequests: expected only charlie, got %v", reqs)
-	}
-}
-
-// ---- helper ----
-
-func checkFile(t *testing.T, path string) {
-	t.Helper()
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("expected file %s to exist: %v", path, err)
 	}
 }
 
 // ---- concurrency ----
 
 func TestConcurrentCommits(t *testing.T) {
-	id := newIdentity(t, "alice")
-	r, err := repo.Init(t.TempDir(), repo.ForumMeta{Name: "F", AdminPubkey: id.PublicKey}, id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, id := newForum(t, "alice")
 
 	const n = 20
 	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
 		go func(i int) {
-			rel := filepath.Join("general", "t", fmt.Sprintf("%d_%08x.md", 1700000000000+i, i))
-			errs <- r.CommitPost(id, rel, []byte(fmt.Sprintf("post %d\n", i)))
+			rel := fmt.Sprintf("general/t/%d_%08x.md", 1700000000000+i, i)
+			errs <- r.Commit(id, "post", map[string][]byte{rel: []byte(fmt.Sprintf("post %d\n", i))}, nil)
 		}(i)
+	}
+	// Readers run concurrently with the writers.
+	for i := 0; i < n; i++ {
+		go func() {
+			if snap, err := r.Snapshot(); err == nil {
+				_, _ = fs.ReadDir(snap.FS, ".")
+			}
+		}()
 	}
 	for i := 0; i < n; i++ {
 		if err := <-errs; err != nil {
-			t.Errorf("CommitPost: %v", err)
+			t.Errorf("Commit: %v", err)
 		}
 	}
-
-	gr, err := gogit.PlainOpen(r.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	head, _ := gr.Head()
-	iter, _ := gr.Log(&gogit.LogOptions{From: head.Hash()})
-	count := 0
-	_ = iter.ForEach(func(*object.Commit) error { count++; return nil })
-	if count != n+1 {
-		t.Errorf("commits: got %d, want %d", count, n+1)
+	if got := countCommits(t, r.Path); got != n+1 {
+		t.Errorf("commits: got %d, want %d", got, n+1)
 	}
 }

@@ -18,14 +18,16 @@ Go version: 1.23 (net/http path parameters via `r.PathValue`)
     go test ./internal/crypto/... -v
     go test ./internal/forum/... -v
     go test ./internal/repo/... -v
+    go test ./internal/store/... -v
 
 ## Package layout
 
 | Package | Responsibility |
 |---|---|
 | `internal/crypto` | Ed25519 keygen, sign, verify, identity file I/O |
-| `internal/forum` | Post parsing, signing, verification, Thread, Category |
-| `internal/repo` | All go-git operations (init, open, commit, push/pull) |
+| `internal/forum` | Post parsing, signing, verification, Thread, Category (reads any `fs.FS`) |
+| `internal/repo` | All go-git operations (init, open, HEAD snapshot as `fs.FS`, commit, push/pull) |
+| `internal/store` | Forum operations and on-disk layout; cached reads from HEAD, writes via `repo.Commit` |
 | `internal/api` | HTTP server, JSON handlers |
 | `internal/ui` | `//go:embed static` — index.html, style.css, app.js |
 | `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request |
@@ -58,6 +60,10 @@ Tombstone files: `{original_filename}.tomb` — signed by admin key only.
 - Table-driven tests where there are multiple cases.
 - Repo-package tests create a temporary bare git repo as a remote fixture.
 - All git operations go through `internal/repo`; never shell out to git.
+- Forum content is read from the HEAD tree (`repo.Snapshot`), never from the
+  working tree. API handlers and CLI commands go through `internal/store`.
+- Every name from a request or the repo is checked with `forum.ValidSlug`,
+  `forum.ValidUsername` or `forum.ValidPostFilename` before use.
 - Markdown rendered server-side (goldmark); frontend receives `body_html`.
 - No CGo, no vendoring, no JS bundler or transpiler.
 - Do not store binaries in the forum repo.

@@ -81,5 +81,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	srv := api.New(servePort, absRepo, r, id)
 	srv.Host = serveListen
+	srv.IdentityPath = identPath
 	return srv.ListenAndServe(ui.StaticFS)
 }

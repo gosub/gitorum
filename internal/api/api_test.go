@@ -14,6 +14,7 @@ import (
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 	"github.com/gosub/gitorum/internal/ui"
 )
 
@@ -36,38 +37,23 @@ func setupForum(t *testing.T) *api.Server {
 		t.Fatal(err)
 	}
 
-	// Create a category.
-	catDir := filepath.Join(dir, "general")
-	if err := os.MkdirAll(catDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	meta := "name = \"General\"\ndescription = \"General discussion\"\n"
-	if err := os.WriteFile(filepath.Join(catDir, "META.toml"), []byte(meta), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a thread with a signed root post and one reply.
-	threadDir := filepath.Join(catDir, "hello-world")
-	if err := os.MkdirAll(threadDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	rootPost, err := forum.SignPost(id, "", "# Hello\n\nThis is the root post.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootPost.Filename = forum.RootFilename
 	rootContent := rootPost.Format()
-	if err := os.WriteFile(filepath.Join(threadDir, forum.RootFilename), rootContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	reply, err := forum.SignPost(id, forum.PostHash(rootContent), "A reply to the root post.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply.Filename = forum.NewPostFilename(reply.Body)
-	if err := os.WriteFile(filepath.Join(threadDir, reply.Filename), reply.Format(), 0o644); err != nil {
+	replyContent := reply.Format()
+
+	// A category with a signed root post and one reply.
+	if err := r.Commit(id, "fixture", map[string][]byte{
+		"general/META.toml":                                          []byte("name = \"General\"\ndescription = \"General discussion\"\n"),
+		"general/hello-world/" + forum.RootFilename:                  rootContent,
+		"general/hello-world/" + forum.NewPostFilename(replyContent): replyContent,
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -343,14 +329,14 @@ func TestHandleSetup_AlreadyInitialized(t *testing.T) {
 }
 
 func TestHandleSetup_MissingFields(t *testing.T) {
-	dir := t.TempDir()
-	id, _ := crypto.Generate("alice")
-	srv := api.New(8080, dir, nil, id)
-
 	for _, body := range []map[string]string{
 		{"username": "", "forum_name": "Forum"},
+		{"username": "../alice", "forum_name": "Forum"},
 		{"username": "alice", "forum_name": ""},
 	} {
+		// No identity yet, so the username is required to generate one.
+		srv := api.New(8080, t.TempDir(), nil, nil)
+		srv.IdentityPath = filepath.Join(t.TempDir(), "identity.toml")
 		w := hitJSON(t, srv, "POST", "/api/setup", body)
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("body %v: expected 400, got %d", body, w.Code)
@@ -493,8 +479,8 @@ func TestHandleNewThread_InvalidCategory(t *testing.T) {
 	srv := setupForum(t)
 	body := map[string]string{"category": "no-such-cat", "slug": "test", "body": "y"}
 	w := hitJSON(t, srv, "POST", "/api/threads", body)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
 
@@ -524,13 +510,11 @@ func setupForumAsNonAdmin(t *testing.T) *api.Server {
 		t.Fatal(err)
 	}
 
-	// Create category and thread so we have something to delete.
-	catDir := filepath.Join(dir, "general")
-	if err := os.MkdirAll(catDir, 0o755); err != nil {
+	if err := r.Commit(admin, "fixture", map[string][]byte{
+		"general/META.toml": []byte("name = \"General\"\ndescription = \"\"\n"),
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.WriteFile(filepath.Join(catDir, "META.toml"),
-		[]byte("name = \"General\"\ndescription = \"\"\n"), 0o644)
 
 	return api.New(8080, dir, r, bob)
 }
@@ -699,7 +683,7 @@ func setupForumWithRequest(t *testing.T) (*api.Server, *crypto.Identity) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SubmitJoinRequest(bob); err != nil {
+	if err := store.New(r).SubmitJoinRequest(bob); err != nil {
 		t.Fatalf("SubmitJoinRequest: %v", err)
 	}
 	return srv, bob
@@ -892,11 +876,14 @@ func TestAddKey_RefusesOverwrite(t *testing.T) {
 
 func TestJoinRequests_SkipsHostileFilenames(t *testing.T) {
 	srv := setupForum(t)
-	reqDir := filepath.Join(srv.RepoPath, "requests")
-	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+	r, err := repo.Open(srv.RepoPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(reqDir, "x');alert(1);('.pub"), []byte("AAAA\n"), 0o644); err != nil {
+	mallory, _ := crypto.Generate("mallory")
+	if err := r.Commit(mallory, "evil", map[string][]byte{
+		"requests/x');alert(1);('.pub": []byte(mallory.PublicKey + "\n"),
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	w := hit(t, srv, "GET", "/api/admin/requests")

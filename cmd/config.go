@@ -7,6 +7,7 @@ import (
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 )
 
 var configCmd = &cobra.Command{
@@ -42,7 +43,8 @@ func runConfig(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open repo: %w", err)
 	}
 
-	meta, err := r.ReadMeta()
+	st := store.New(r)
+	meta, err := st.Meta()
 	if err != nil {
 		return fmt.Errorf("read metadata: %w", err)
 	}
@@ -50,10 +52,9 @@ func runConfig(cmd *cobra.Command, args []string) error {
 	// No flags → print current config.
 	autoApproveChanged := cmd.Flags().Changed("auto-approve")
 	if configRemoteURL == "" && configForumName == "" && !autoApproveChanged {
-		_, remoteURL := r.IsSynced()
 		fmt.Printf("Forum name   : %s\n", meta.Name)
 		fmt.Printf("Admin key    : %s\n", meta.AdminPubkey)
-		fmt.Printf("Remote URL   : %s\n", remoteURL)
+		fmt.Printf("Remote URL   : %s\n", r.RemoteURL())
 		fmt.Printf("Auto-approve : %v\n", meta.AutoApproveKeys)
 		return nil
 	}
@@ -77,7 +78,7 @@ func runConfig(cmd *cobra.Command, args []string) error {
 		metaChanged = true
 	}
 	if metaChanged {
-		if err := r.UpdateMeta(id, *meta); err != nil {
+		if err := st.UpdateMeta(id, *meta); err != nil {
 			return fmt.Errorf("update metadata: %w", err)
 		}
 		if configForumName != "" {

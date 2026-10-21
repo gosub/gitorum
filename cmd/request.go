@@ -9,6 +9,7 @@ import (
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 )
 
 var requestCmd = &cobra.Command{
@@ -55,19 +56,23 @@ func runRequest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open repo: %w", err)
 	}
 
-	// Already approved?
-	if _, err := os.Stat(filepath.Join(r.Path, "keys", id.Username+".pub")); err == nil {
+	st := store.New(r)
+	if st.HasKey(id.Username) {
 		fmt.Printf("@%s is already approved in this forum.\n", id.Username)
 		return nil
 	}
-
-	// Request already pending?
-	if _, err := os.Stat(filepath.Join(r.Path, "requests", id.Username+".pub")); err == nil {
-		fmt.Printf("A join request for @%s is already pending.\n", id.Username)
-		return nil
+	reqs, err := st.JoinRequests()
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		if req.Username == id.Username {
+			fmt.Printf("A join request for @%s is already pending.\n", id.Username)
+			return nil
+		}
 	}
 
-	if err := r.SubmitJoinRequest(id); err != nil {
+	if err := st.SubmitJoinRequest(id); err != nil {
 		return fmt.Errorf("submit request: %w", err)
 	}
 	fmt.Printf("Join request submitted for @%s\n", id.Username)

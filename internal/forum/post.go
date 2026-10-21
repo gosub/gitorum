@@ -6,8 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,6 +47,7 @@ type Post struct {
 
 	// Metadata
 	Filename   string    // e.g. "0000_root.md" or "1708123456789_a3f9c1b2.md"
+	Hash       string    // PostHash of the file content; empty for unsaved posts
 	SigStatus  SigStatus // set by VerifySignature
 	SigError   string    // human-readable reason when SigStatus != SigValid
 	Tombstoned bool      // true when a tombstone file exists; body/author are cleared
@@ -77,42 +76,40 @@ func ParsePost(filename string, content []byte) (*Post, error) {
 		Body:         body,
 		BodyHTML:     renderMarkdown(body),
 		Filename:     filename,
+		Hash:         PostHash(content),
 	}, nil
 }
 
-// VerifySignature looks up <keysDir>/<author>.pub, reconstructs the canonical
-// form, and verifies the signature. It sets SigStatus and SigError in place.
-func (p *Post) VerifySignature(keysDir string) {
-	pubPath := filepath.Join(keysDir, p.Author+".pub")
-	data, err := os.ReadFile(pubPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			p.SigStatus = SigMissing
-			p.SigError = fmt.Sprintf("no public key for author %q", p.Author)
-		} else {
-			p.SigStatus = SigInvalid
-			p.SigError = fmt.Sprintf("read key file: %v", err)
-		}
+// Verify checks the post signature against the author's keys in ring and
+// sets SigStatus and SigError in place.
+func (p *Post) Verify(ring *KeyRing) {
+	keys := ring.Keys(p.Author)
+	if len(keys) == 0 {
+		p.SigStatus = SigMissing
+		p.SigError = fmt.Sprintf("no public key for author %q", p.Author)
 		return
 	}
-	pubkeyB64 := strings.TrimSpace(string(data))
+	canonical := crypto.CanonicalForm(p.fields(), p.Body)
+	var lastErr error
+	for _, k := range keys {
+		if lastErr = crypto.VerifyWithPublicKeyB64(k, canonical, p.Signature); lastErr == nil {
+			p.SigStatus = SigValid
+			p.SigError = ""
+			return
+		}
+	}
+	p.SigStatus = SigInvalid
+	p.SigError = lastErr.Error()
+}
 
-	// Reconstruct canonical form. CanonicalForm excludes "signature" automatically.
-	fields := map[string]string{
+// fields returns the signed front matter fields.
+func (p *Post) fields() map[string]string {
+	return map[string]string{
 		"author":    p.Author,
 		"pubkey":    p.PubKey,
 		"timestamp": p.TimestampRaw,
 		"parent":    p.Parent,
-		"signature": p.Signature,
 	}
-	canonical := crypto.CanonicalForm(fields, p.Body)
-
-	if err := crypto.VerifyWithPublicKeyB64(pubkeyB64, canonical, p.Signature); err != nil {
-		p.SigStatus = SigInvalid
-		p.SigError = err.Error()
-		return
-	}
-	p.SigStatus = SigValid
 }
 
 // Format serializes the post to the on-disk file format:
