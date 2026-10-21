@@ -43,7 +43,7 @@ using go-git. Users interact through the browser; git operations happen
 transparently in the background.
 
 Every post is an Ed25519-signed Markdown file committed to the repository.
-Syncing with other participants is plain `git push` / `git pull --rebase`.
+Syncing with other participants is a fetch, a rebase of local commits, and a push.
 There is no central server, no database, and no account system beyond a keypair
 stored in `~/.config/gitorum/identity.toml`.
 
@@ -278,9 +278,21 @@ click the sync button in the sidebar
 curl -X POST -H 'Content-Type: application/json' http://localhost:8080/api/sync
 ```
 
-On push conflict the binary performs `git pull --rebase` and retries once.
-Because every post is an independent file, conflicts are rare and resolve
-automatically.
+A sync fetches `origin`, then integrates it:
+
+- if only the remote moved, the local branch fast-forwards;
+- if both sides have new commits (e.g. two people posted while offline),
+  the local commits are replayed on top of the remote, like
+  `git pull --rebase`, and then pushed. If someone else pushed in the
+  meantime, the cycle is retried once.
+
+Every post is a new, uniquely named file, so replaying never conflicts in
+practice. A real conflict (both sides edited the same file, such as
+`GITORUM.toml`, differently) aborts the sync, leaves the local branch
+exactly as it was, and is reported in the UI.
+
+Posting also syncs. If that fails (no network, conflict), the post stays
+committed locally and the sidebar shows how many commits are unpushed.
 
 ## Configuration
 

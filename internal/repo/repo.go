@@ -57,7 +57,14 @@ type Repo struct {
 	Path string
 	git  *gogit.Repository
 	mu   sync.Mutex
+
+	// Status cache: ahead/behind counts for a (local, remote) hash pair.
+	statusKey   [2]plumbing.Hash
+	statusCache [2]int
 }
+
+// nowFunc is the clock used for commit timestamps.
+var nowFunc = time.Now
 
 // Init creates a new forum repository at path.
 //
@@ -184,61 +191,6 @@ func (r *Repo) RemoteURL() string {
 	return r.remoteURL()
 }
 
-// IsSynced reports whether the local HEAD matches the remote tracking ref for
-// origin. Returns (true, "") when no remote is configured (nothing to sync).
-func (r *Repo) IsSynced() (synced bool, remoteURL string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	remoteURL = r.remoteURL()
-	if remoteURL == "" {
-		return true, ""
-	}
-	head, err := r.git.Head()
-	if err != nil {
-		return false, remoteURL
-	}
-	remoteRef, err := r.git.Reference(
-		plumbing.NewRemoteReferenceName("origin", head.Name().Short()), true)
-	if err != nil {
-		// Remote ref not found means we haven't pushed yet.
-		return false, remoteURL
-	}
-	return head.Hash() == remoteRef.Hash(), remoteURL
-}
-
-// Pull fetches from origin and fast-forward merges into the current branch.
-// Returns nil when there is no remote configured or the ref is already up to
-// date. Merge conflicts are returned as errors. A 30-second timeout applies.
-func (r *Repo) Pull() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.remoteURL() == "" {
-		return nil
-	}
-	head, err := r.git.Head()
-	if err != nil {
-		return fmt.Errorf("head: %w", err)
-	}
-	wt, err := r.git.Worktree()
-	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
-	defer cancel()
-
-	err = wt.PullContext(ctx, &gogit.PullOptions{
-		RemoteName:    "origin",
-		ReferenceName: head.Name(),
-	})
-	if err == gogit.NoErrAlreadyUpToDate {
-		return nil
-	}
-	return err
-}
-
 // Push attempts to push to the origin remote. Returns nil if there is no
 // remote configured or the ref is already up to date. A 30-second timeout
 // applies.
@@ -277,11 +229,16 @@ func signature(identity *crypto.Identity) *object.Signature {
 	return &object.Signature{
 		Name:  identity.Username,
 		Email: identity.Username + "@gitorum.local",
-		When:  time.Now(),
+		When:  nowFunc(),
 	}
 }
 
 func (r *Repo) commit(identity *crypto.Identity, message string, write map[string][]byte, remove []string) error {
+	sig := signature(identity)
+	return r.commitAs(sig, sig, message, write, remove)
+}
+
+func (r *Repo) commitAs(author, committer *object.Signature, message string, write map[string][]byte, remove []string) error {
 	wt, err := r.git.Worktree()
 	if err != nil {
 		return fmt.Errorf("worktree: %w", err)
@@ -310,10 +267,9 @@ func (r *Repo) commit(identity *crypto.Identity, message string, write map[strin
 		}
 	}
 
-	sig := signature(identity)
 	if _, err := wt.Commit(message, &gogit.CommitOptions{
-		Author:    sig,
-		Committer: sig,
+		Author:    author,
+		Committer: committer,
 	}); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}

@@ -236,15 +236,15 @@ func TestRepo_PullPush(t *testing.T) {
 		t.Fatalf("bob push: %v", err)
 	}
 
-	if err := r.Pull(); err != nil {
-		t.Fatalf("Pull: %v", err)
+	if _, err := r.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
 	}
 	snap, _ := r.Snapshot()
 	if _, err := fs.Stat(snap.FS, "general/bobs-post/0000_root.md"); err != nil {
 		t.Errorf("pulled file missing: %v", err)
 	}
-	if err := r.Pull(); err != nil {
-		t.Errorf("second Pull (already up to date): %v", err)
+	if _, err := r.Sync(); err != nil {
+		t.Errorf("second Sync (already up to date): %v", err)
 	}
 }
 

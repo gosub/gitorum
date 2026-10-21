@@ -45,15 +45,16 @@ func (s *Server) ready(w http.ResponseWriter, needID bool) (*store.Store, *crypt
 	return st, id, true
 }
 
-// pushAfterWrite shares a local commit. A failed push is not an error for the
-// write itself (the post is committed locally), but the client is told so it
-// can show that the post has not left the machine yet.
+// pushAfterWrite shares a local commit by syncing with the remote. A failed
+// sync is not an error for the write itself (the post is committed locally),
+// but the client is told so it can show that the post has not left the
+// machine yet.
 func pushAfterWrite(w http.ResponseWriter, st *store.Store, status int) {
 	resp := OKResponse{OK: true, Pushed: true}
-	if err := st.Repo().Push(); err != nil {
-		log.Printf("push: %v", err)
+	if _, err := st.Repo().Sync(); err != nil {
+		log.Printf("sync after write: %v", err)
 		resp.Pushed = false
-		resp.Message = "saved locally, but push failed: " + err.Error()
+		resp.Message = "saved locally, but not shared: " + err.Error()
 	}
 	writeJSON(w, status, resp)
 }
@@ -76,7 +77,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			resp.ForumName = meta.Name
 		}
 		resp.IsAdmin = st.IsAdmin(id)
-		resp.Synced, resp.RemoteURL = st.Repo().IsSynced()
+		sync := st.Repo().Status()
+		resp.RemoteURL = sync.RemoteURL
+		resp.Ahead, resp.Behind = sync.Ahead, sync.Behind
+		resp.Synced = sync.Synced()
 	} else {
 		resp.ForumName = "Gitorum"
 		resp.Synced = true
@@ -158,14 +162,19 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := st.Sync(id); err != nil {
+	res, err := st.Sync(id)
+	if errors.Is(err, repo.ErrConflict) {
+		apiError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
 		apiError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	s.mu.Lock()
 	s.lastSyncAt = time.Now()
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, OKResponse{OK: true, Pushed: true})
+	writeJSON(w, http.StatusOK, SyncResponse{OK: true, Pulled: res.Pulled, Rebased: res.Rebased, Pushed: res.Pushed})
 }
 
 // GET /api/categories

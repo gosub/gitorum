@@ -56,6 +56,8 @@ type StatusResponse struct {
 	ForumName   string `json:"forum_name"`
 	RemoteURL   string `json:"remote_url,omitempty"`
 	Synced      bool   `json:"synced"`
+	Ahead       int    `json:"ahead"`                  // local commits not yet pushed
+	Behind      int    `json:"behind"`                 // fetched remote commits not yet integrated
 	Initialized bool   `json:"initialized"`            // false until forum repo exists
 	LastSyncAt  string `json:"last_sync_at,omitempty"` // RFC3339, set after first sync
 }
@@ -115,6 +117,13 @@ type OKResponse struct {
 	OK      bool   `json:"ok"`
 	Pushed  bool   `json:"pushed"` // false when a write was committed locally but not pushed
 	Message string `json:"message,omitempty"`
+}
+
+type SyncResponse struct {
+	OK      bool `json:"ok"`
+	Pulled  int  `json:"pulled"`
+	Rebased int  `json:"rebased"`
+	Pushed  bool `json:"pushed"`
 }
 
 type ErrorResponse struct {

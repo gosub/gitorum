@@ -437,23 +437,30 @@ func (s *Store) findRequest(username string) (*JoinRequest, error) {
 	return nil, fmt.Errorf("join request from @%s: %w", username, ErrNotFound)
 }
 
-// Sync pulls from origin, auto-approves join requests when configured and id
-// is the admin, then pushes.
-func (s *Store) Sync(id *crypto.Identity) error {
-	if err := s.repo.Pull(); err != nil {
-		return fmt.Errorf("pull: %w", err)
+// Sync integrates origin and pushes local commits. When auto-approval is
+// enabled and id is the admin, pending join requests are approved and the
+// approvals are pushed in a second round.
+func (s *Store) Sync(id *crypto.Identity) (repo.SyncResult, error) {
+	res, err := s.repo.Sync()
+	if err != nil {
+		return res, err
 	}
-	if meta, err := s.Meta(); err == nil && meta.AutoApproveKeys && s.IsAdmin(id) {
-		if reqs, err := s.JoinRequests(); err == nil {
-			for _, r := range reqs {
-				if err := s.ApproveJoinRequest(id, r.Username); err != nil {
-					return fmt.Errorf("auto-approve %s: %w", r.Username, err)
-				}
-			}
+	meta, err := s.Meta()
+	if err != nil || !meta.AutoApproveKeys || !s.IsAdmin(id) {
+		return res, nil
+	}
+	reqs, err := s.JoinRequests()
+	if err != nil || len(reqs) == 0 {
+		return res, err
+	}
+	for _, r := range reqs {
+		if err := s.ApproveJoinRequest(id, r.Username); err != nil {
+			return res, fmt.Errorf("auto-approve %s: %w", r.Username, err)
 		}
 	}
-	if err := s.repo.Push(); err != nil {
-		return fmt.Errorf("push: %w", err)
-	}
-	return nil
+	res2, err := s.repo.Sync()
+	res.Pulled += res2.Pulled
+	res.Rebased += res2.Rebased
+	res.Pushed = res.Pushed || res2.Pushed
+	return res, err
 }

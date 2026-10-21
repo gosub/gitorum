@@ -81,6 +81,6 @@ Tombstone files: `{original_filename}.tomb` — signed by admin key only.
 | 4 | done | `internal/api` + `internal/ui` — HTTP server, stub handlers, SPA |
 | 5 | done | Wire repo into API — real reads from git working tree |
 | 6 | done | Post submission — write, sign, commit, push |
-| 7 | done | Sync — pull --rebase, conflict handling |
+| 7 | done | Sync — fetch, replay local commits onto remote, push (`repo.Sync`) |
 | 8 | done | Admin — tombstones, key management |
 | 9 | done | Setup wizard — first-run config page |
