@@ -50,13 +50,17 @@ func (s *Server) ready(w http.ResponseWriter, needID bool) (*store.Store, *crypt
 // but the client is told so it can show that the post has not left the
 // machine yet.
 func pushAfterWrite(w http.ResponseWriter, st *store.Store, status int) {
+	writeJSON(w, status, pushResult(st))
+}
+
+func pushResult(st *store.Store) OKResponse {
 	resp := OKResponse{OK: true, Pushed: true}
 	if _, err := st.Repo().Sync(); err != nil {
 		log.Printf("sync after write: %v", err)
 		resp.Pushed = false
 		resp.Message = "saved locally, but not shared: " + err.Error()
 	}
-	writeJSON(w, status, resp)
+	return resp
 }
 
 // GET /api/status
@@ -243,11 +247,22 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	for _, p := range thread.Posts {
 		posts = append(posts, postToResponse(p))
 	}
-	writeJSON(w, http.StatusOK, ThreadResponse{
-		Category: thread.Category,
-		Slug:     thread.Slug,
-		Posts:    posts,
-	})
+	resp := ThreadResponse{
+		Category:     thread.Category,
+		CategoryName: thread.Category,
+		Slug:         thread.Slug,
+		Title:        thread.Slug,
+		Posts:        posts,
+	}
+	if cat, _, err := st.Threads(thread.Category); err == nil {
+		resp.CategoryName = cat.Name
+	}
+	if thread.Root != nil && !thread.Root.Tombstoned {
+		resp.Title = thread.Root.DisplayTitle(thread.Slug)
+	} else if len(thread.Posts) > 0 && thread.Posts[0].Tombstoned {
+		resp.Title = "[deleted]"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // POST /api/threads/{cat}/{thread}/reply
@@ -281,11 +296,13 @@ func (s *Server) handleNewThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := st.NewThread(id, req.Category, req.Slug, req.Body); err != nil {
+	slug, err := st.NewThread(id, req.Category, req.Title, req.Slug, req.Body)
+	if err != nil {
 		storeError(w, err)
 		return
 	}
-	pushAfterWrite(w, st, http.StatusCreated)
+	resp := pushResult(st)
+	writeJSON(w, http.StatusCreated, NewThreadResponse{OKResponse: resp, Slug: slug})
 }
 
 // POST /api/categories

@@ -250,9 +250,10 @@ async function viewThread(catSlug, threadSlug) {
   const rootHash = posts.length ? posts[0].hash : '';
   let h = `<nav class="breadcrumb">
     <a href="#/">Home</a> ›
-    <a href="#/cat/${u(catSlug)}">${esc(catSlug)}</a> ›
-    ${esc(threadSlug)}
-  </nav>`;
+    <a href="#/cat/${u(catSlug)}">${esc(data.category_name || catSlug)}</a> ›
+    ${esc(data.title || threadSlug)}
+  </nav>
+  <h1 class="thread-title">${esc(data.title || threadSlug)}</h1>`;
 
   posts.forEach((p, i) => {
     if (p.tombstoned) {
@@ -314,9 +315,12 @@ function viewNewThread(catSlug) {
       <label>Title
         <input type="text" id="nt-title" required placeholder="Thread title">
       </label>
-      <label>Thread slug <small style="font-weight:400">(lowercase letters, numbers, hyphens)</small>
-        <input type="text" id="nt-slug" pattern="[a-z0-9-]+" required placeholder="my-first-thread">
-      </label>
+      <details class="advanced">
+        <summary>Custom URL slug</summary>
+        <label>Slug <small style="font-weight:400">(optional; derived from the title when empty)</small>
+          <input type="text" id="nt-slug" pattern="[a-z0-9][a-z0-9-]*" placeholder="my-first-thread">
+        </label>
+      </details>
       <label>Body <small style="font-weight:400">(Markdown supported)</small>
         <textarea id="nt-body" rows="10" placeholder="Write your post here…"></textarea>
       </label>
@@ -378,16 +382,15 @@ async function submitReply({ cat: catSlug, thread: threadSlug }) {
 async function submitNewThread({ cat: catSlug }) {
   const title   = $('nt-title').value.trim();
   const slug    = $('nt-slug').value.trim();
-  const bodyRaw = $('nt-body').value.trim();
-  const body    = title ? `# ${title}\n\n${bodyRaw}` : bodyRaw;
-  if (!slug || !body) return;
+  const body    = $('nt-body').value.trim();
+  if (!title) return;
 
   try {
-    await apiFetch('/threads', {
+    const res = await apiFetch('/threads', {
       method: 'POST',
-      body:   JSON.stringify({ category: catSlug, slug, body }),
+      body:   JSON.stringify({ category: catSlug, title, slug, body }),
     });
-    location.hash = `#/cat/${u(catSlug)}/thread/${u(slug)}`;
+    location.hash = `#/cat/${u(catSlug)}/thread/${u(res.slug)}`;
   } catch (e) {
     alert('Error: ' + e.message);
   }

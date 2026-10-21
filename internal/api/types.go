@@ -30,9 +30,11 @@ type ThreadSummary struct {
 }
 
 type ThreadResponse struct {
-	Category string         `json:"category"`
-	Slug     string         `json:"slug"`
-	Posts    []PostResponse `json:"posts"`
+	Category     string         `json:"category"`
+	CategoryName string         `json:"category_name"`
+	Slug         string         `json:"slug"`
+	Title        string         `json:"title"`
+	Posts        []PostResponse `json:"posts"`
 }
 
 // PostResponse is the wire representation of a post sent to the browser.
@@ -42,6 +44,7 @@ type PostResponse struct {
 	Author     string `json:"author"`
 	PubKey     string `json:"pubkey"`
 	Timestamp  string `json:"timestamp"`
+	Title      string `json:"title,omitempty"`
 	Parent     string `json:"parent"` // hash of the post this one answers
 	Hash       string `json:"hash"`   // hash of this post's file (what replies put in parent)
 	Body       string `json:"body"`
@@ -84,8 +87,14 @@ type ReplyRequest struct {
 
 type NewThreadRequest struct {
 	Category string `json:"category"`
-	Slug     string `json:"slug"`
+	Title    string `json:"title"`
+	Slug     string `json:"slug"` // optional; derived from the title when empty
 	Body     string `json:"body"`
+}
+
+type NewThreadResponse struct {
+	OKResponse
+	Slug string `json:"slug"`
 }
 
 type AdminDeleteRequest struct {

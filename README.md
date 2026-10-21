@@ -72,14 +72,17 @@ author    = "alice"
 pubkey    = "Aa1b2c3d"
 timestamp = "2026-02-17T10:00:00Z"
 parent    = ""
+title     = "Thread title"
 signature = "<base64 Ed25519 signature>"
 +++
 
 Post body in Markdown.
 ```
 
-The `parent` field holds the SHA-256 hex digest of the parent post file
-content (empty string for root posts). The signature covers all front matter
+The `parent` field holds the SHA-256 hex digest of the file of the post being
+answered (empty string for root posts). `title` is present on root posts.
+Optional fields such as `title` are signed only when present, so older posts
+without them still verify. The signature covers all front matter
 fields except `signature` itself, serialized as sorted `key=value` lines
 followed by a blank line and the raw body.
 

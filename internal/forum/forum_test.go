@@ -817,3 +817,49 @@ func TestTombstone_OnlyAdminSignedAndBound(t *testing.T) {
 		}
 	}
 }
+
+func TestTitle_RoundTripAndSigned(t *testing.T) {
+	id := mustGenerate(t, "alice")
+	for _, title := range []string{"Hello", `Quotes " and \ backslash`, "Ünïcödé ✓", "tab\there"} {
+		p, err := forum.Sign(id, forum.Header{Title: title}, "body")
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := forum.ParsePost(forum.RootFilename, p.Format())
+		if err != nil {
+			t.Fatalf("%q: %v", title, err)
+		}
+		if parsed.Title != title {
+			t.Errorf("title: got %q, want %q", parsed.Title, title)
+		}
+		root := t.TempDir()
+		writeKey(t, filepath.Join(root, "keys"), "alice", id.PublicKey)
+		parsed.Verify(keyRing(t, root))
+		if parsed.SigStatus != forum.SigValid {
+			t.Errorf("%q: %v %s", title, parsed.SigStatus, parsed.SigError)
+		}
+		parsed.Title = "forged"
+		parsed.Verify(keyRing(t, root))
+		if parsed.SigStatus != forum.SigInvalid {
+			t.Errorf("%q: changed title still verifies", title)
+		}
+	}
+	if _, err := forum.Sign(id, forum.Header{Title: "two\nlines"}, "b"); err == nil {
+		t.Error("multi-line title accepted")
+	}
+}
+
+func TestDisplayTitle(t *testing.T) {
+	tests := []struct{ title, body, want string }{
+		{"Explicit", "# Ignored", "Explicit"},
+		{"", "\n## From body\nmore", "From body"},
+		{"", "", "fallback"},
+		{"", strings.Repeat("x", 120), strings.Repeat("x", 100) + "…"},
+	}
+	for _, tt := range tests {
+		p := &forum.Post{Title: tt.title, Body: tt.body}
+		if got := p.DisplayTitle("fallback"); got != tt.want {
+			t.Errorf("DisplayTitle(%q,%q) = %q, want %q", tt.title, tt.body, got, tt.want)
+		}
+	}
+}

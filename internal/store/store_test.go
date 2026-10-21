@@ -90,7 +90,7 @@ func TestAddKey_NoOverwrite(t *testing.T) {
 
 func TestThreads_CacheFollowsHead(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "hello", "# Hello"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "hello", "# Hello"); err != nil {
 		t.Fatal(err)
 	}
 	th, err := st.Thread("general", "hello")
@@ -108,7 +108,7 @@ func TestThreads_CacheFollowsHead(t *testing.T) {
 
 func TestReply_SameBodyTwice(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "hello", "# Hello"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "hello", "# Hello"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
@@ -124,7 +124,7 @@ func TestReply_SameBodyTwice(t *testing.T) {
 
 func TestThread_IgnoresUntrackedFiles(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "hello", "# Hello"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "hello", "# Hello"); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(st.Repo().Path, "general", "hello")
@@ -167,7 +167,7 @@ func TestTrust_ApprovedKeyIsCertified(t *testing.T) {
 	if err := st.ApproveJoinRequest(admin, "bob"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.NewThread(bob, "general", "hi", "# Hi"); err != nil {
+	if _, err := st.NewThread(bob, "general", "", "hi", "# Hi"); err != nil {
 		t.Fatal(err)
 	}
 	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigValid {
@@ -177,7 +177,7 @@ func TestTrust_ApprovedKeyIsCertified(t *testing.T) {
 
 func TestTrust_PlantedKeyIsUntrusted(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "hi", "# Hi"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "hi", "# Hi"); err != nil {
 		t.Fatal(err)
 	}
 	// Anyone with push access writes their own key file and posts.
@@ -281,7 +281,7 @@ func TestAddKey_Rotate(t *testing.T) {
 	if err := st.AddKey(admin, "bob", bobOld.PublicKey, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.NewThread(bobOld, "general", "old", "# Old"); err != nil {
+	if _, err := st.NewThread(bobOld, "general", "", "old", "# Old"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.AddKey(admin, "bob", bobNew.PublicKey, true); err != nil {
@@ -293,7 +293,7 @@ func TestAddKey_Rotate(t *testing.T) {
 	if err := st.AddKey(admin, "nobody", bobNew.PublicKey, true); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("rotate unknown user: %v", err)
 	}
-	if err := st.NewThread(bobNew, "general", "new", "# New"); err != nil {
+	if _, err := st.NewThread(bobNew, "general", "", "new", "# New"); err != nil {
 		t.Fatal(err)
 	}
 	for _, slug := range []string{"old", "new"} {
@@ -307,7 +307,7 @@ func TestAddKey_Rotate(t *testing.T) {
 
 func TestHide_RootNotLeakedInList(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "secret", "# Secret title\n\nleaked?"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "secret", "# Secret title\n\nleaked?"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Tombstone(admin, "general", "secret", forum.RootFilename, false); err != nil {
@@ -324,7 +324,7 @@ func TestHide_RootNotLeakedInList(t *testing.T) {
 
 func TestPurge_RemovesFileKeepsPlaceholder(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "t", "# T"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "t", "# T"); err != nil {
 		t.Fatal(err)
 	}
 	name, err := st.Reply(admin, "general", "t", "spam spam spam", "")
@@ -398,7 +398,7 @@ func TestJoinToken(t *testing.T) {
 	if err != nil || user != "bob" {
 		t.Fatalf("AddKeyFromToken: %q %v", user, err)
 	}
-	if err := st.NewThread(bob, "general", "hi", "# hi"); err != nil {
+	if _, err := st.NewThread(bob, "general", "", "hi", "# hi"); err != nil {
 		t.Fatal(err)
 	}
 	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigValid {
@@ -408,7 +408,7 @@ func TestJoinToken(t *testing.T) {
 
 func TestReply_ToSpecificPost(t *testing.T) {
 	st, admin := newStore(t)
-	if err := st.NewThread(admin, "general", "t", "# T"); err != nil {
+	if _, err := st.NewThread(admin, "general", "", "t", "# T"); err != nil {
 		t.Fatal(err)
 	}
 	first, err := st.Reply(admin, "general", "t", "first", "")
@@ -433,5 +433,31 @@ func TestReply_ToSpecificPost(t *testing.T) {
 		if _, err := st.Reply(admin, "general", "t", "x", bad); err == nil {
 			t.Errorf("reply_to %q accepted", bad)
 		}
+	}
+}
+
+func TestNewThread_TitleAndSlug(t *testing.T) {
+	st, admin := newStore(t)
+	for i, want := range []string{"hello-world", "hello-world-2", "hello-world-3"} {
+		slug, err := st.NewThread(admin, "general", "Hello, World!", "", "body")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slug != want {
+			t.Errorf("thread %d: slug %q, want %q", i, slug, want)
+		}
+	}
+	if slug, _ := st.NewThread(admin, "general", "日本語", "", "x"); slug != "thread" {
+		t.Errorf("non-ASCII title: slug %q, want thread", slug)
+	}
+	if _, err := st.NewThread(admin, "general", "T", "hello-world", "x"); !errors.Is(err, store.ErrExists) {
+		t.Errorf("explicit taken slug: %v", err)
+	}
+	if _, err := st.NewThread(admin, "general", "T", "Bad Slug", "x"); !errors.Is(err, store.ErrInvalid) {
+		t.Errorf("explicit invalid slug: %v", err)
+	}
+	th, _ := st.Thread("general", "hello-world")
+	if th.Root.Title != "Hello, World!" || th.Root.Body != "body" {
+		t.Errorf("root: title %q body %q", th.Root.Title, th.Root.Body)
 	}
 }

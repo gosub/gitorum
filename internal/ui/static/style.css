@@ -229,3 +229,5 @@ label.checkbox input { width: auto; }
 .post-actions { margin-left: .5rem; display: flex; gap: .3rem; }
 .in-reply-to { font-size: .8rem; color: var(--muted); }
 .post-highlight { outline: 2px solid var(--accent); transition: outline .3s; }
+.thread-title { margin-bottom: 1rem; }
+details.advanced summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin-bottom: .5rem; }

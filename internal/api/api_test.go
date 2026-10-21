@@ -457,12 +457,32 @@ func TestHandleNewThread_NoIdentity(t *testing.T) {
 
 func TestHandleNewThread_InvalidSlug(t *testing.T) {
 	srv := setupForum(t)
-	for _, slug := range []string{"", "Has Spaces", "UPPER", "../evil", "-leading"} {
+	for _, slug := range []string{"Has Spaces", "UPPER", "../evil", "-leading"} {
 		body := map[string]string{"category": "general", "slug": slug, "body": "y"}
 		w := hitJSON(t, srv, "POST", "/api/threads", body)
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("slug %q: expected 400, got %d", slug, w.Code)
 		}
+	}
+}
+
+func TestHandleNewThread_DerivedSlug(t *testing.T) {
+	srv := setupForum(t)
+	body := map[string]string{"category": "general", "title": "Hello World", "body": "y"}
+	w := hitJSON(t, srv, "POST", "/api/threads", body)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var resp api.NewThreadResponse
+	decodeJSON(t, w, &resp)
+	if resp.Slug != "hello-world-2" { // "hello-world" exists in the fixture
+		t.Errorf("slug: got %q, want hello-world-2", resp.Slug)
+	}
+	w = hit(t, srv, "GET", "/api/threads/general/"+resp.Slug)
+	var thread api.ThreadResponse
+	decodeJSON(t, w, &thread)
+	if thread.Title != "Hello World" || thread.CategoryName != "General" {
+		t.Errorf("thread: title %q, category %q", thread.Title, thread.CategoryName)
 	}
 }
 

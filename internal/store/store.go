@@ -270,30 +270,48 @@ func exists(v *view, name string) bool {
 	return err == nil
 }
 
-// NewThread creates <cat>/<slug>/0000_root.md signed by id.
-func (s *Store) NewThread(id *crypto.Identity, cat, slug, body string) error {
-	if !forum.ValidSlug(slug) {
-		return fmt.Errorf("slug must be lowercase letters, digits, and hyphens: %w", ErrInvalid)
-	}
-	if strings.TrimSpace(body) == "" {
-		return fmt.Errorf("body is required: %w", ErrInvalid)
+// NewThread creates <cat>/<slug>/0000_root.md signed by id and returns the
+// slug used. When slug is empty it is derived from the title, with a numeric
+// suffix if that slug is taken; an explicit slug must be free.
+func (s *Store) NewThread(id *crypto.Identity, cat, title, slug, body string) (string, error) {
+	title = strings.TrimSpace(title)
+	if strings.TrimSpace(body) == "" && title == "" {
+		return "", fmt.Errorf("title or body is required: %w", ErrInvalid)
 	}
 	v, err := s.current()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !forum.ValidSlug(cat) || !exists(v, path.Join(cat, forum.CategoryMetaFile)) {
-		return fmt.Errorf("category %q: %w", cat, ErrNotFound)
+		return "", fmt.Errorf("category %q: %w", cat, ErrNotFound)
 	}
-	if exists(v, path.Join(cat, slug)) {
-		return fmt.Errorf("thread slug %q: %w", slug, ErrExists)
+	switch {
+	case slug != "":
+		if !forum.ValidSlug(slug) {
+			return "", fmt.Errorf("slug must be lowercase letters, digits, and hyphens: %w", ErrInvalid)
+		}
+		if exists(v, path.Join(cat, slug)) {
+			return "", fmt.Errorf("thread slug %q: %w", slug, ErrExists)
+		}
+	default:
+		base := forum.Slugify(title)
+		if base == "" {
+			base = "thread"
+		}
+		slug = base
+		for n := 2; exists(v, path.Join(cat, slug)); n++ {
+			slug = fmt.Sprintf("%s-%d", base, n)
+		}
 	}
-	post, err := forum.SignPost(id, "", body)
+	post, err := forum.Sign(id, forum.Header{Title: title}, body)
 	if err != nil {
-		return fmt.Errorf("sign post: %w", err)
+		return "", fmt.Errorf("sign post: %v: %w", err, ErrInvalid)
 	}
 	rel := path.Join(cat, slug, forum.RootFilename)
-	return s.repo.Commit(id, "post: add "+rel, map[string][]byte{rel: post.Format()}, nil)
+	if err := s.repo.Commit(id, "post: add "+rel, map[string][]byte{rel: post.Format()}, nil); err != nil {
+		return "", err
+	}
+	return slug, nil
 }
 
 // Reply adds a reply to <cat>/<slug> signed by id and returns its filename.

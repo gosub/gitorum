@@ -29,6 +29,7 @@ type rawFrontMatter struct {
 	PubKey    string `toml:"pubkey"`
 	Timestamp string `toml:"timestamp"`
 	Parent    string `toml:"parent"`
+	Title     string `toml:"title"`
 	Signature string `toml:"signature"`
 }
 
@@ -40,6 +41,7 @@ type Post struct {
 	Timestamp    time.Time
 	TimestampRaw string // raw value from file, used verbatim in canonical form
 	Parent       string // sha256 hex of parent file content; empty for root
+	Title        string // thread title (root posts); optional
 	Signature    string // base64-encoded ed25519 signature
 
 	// Content
@@ -73,6 +75,7 @@ func ParsePost(filename string, content []byte) (*Post, error) {
 		Timestamp:    ts,
 		TimestampRaw: fm.Timestamp,
 		Parent:       fm.Parent,
+		Title:        fm.Title,
 		Signature:    fm.Signature,
 		Body:         body,
 		BodyHTML:     renderMarkdown(body),
@@ -163,13 +166,42 @@ func VerifyTombstone(tombContent, targetContent []byte, adminKey string) error {
 }
 
 // fields returns the signed front matter fields.
+//
+// Optional fields are only part of the canonical form when set, so posts
+// written before they existed keep verifying.
 func (p *Post) fields() map[string]string {
-	return map[string]string{
+	f := map[string]string{
 		"author":    p.Author,
 		"pubkey":    p.PubKey,
 		"timestamp": p.TimestampRaw,
 		"parent":    p.Parent,
 	}
+	if p.Title != "" {
+		f["title"] = p.Title
+	}
+	return f
+}
+
+// DisplayTitle returns the post's title, or for posts without one, the first
+// non-empty line of the body with Markdown heading markers removed,
+// truncated to 100 characters. fallback is used when both are empty.
+func (p *Post) DisplayTitle(fallback string) string {
+	title := p.Title
+	if title == "" {
+		for _, line := range strings.Split(p.Body, "\n") {
+			if line = strings.TrimSpace(strings.TrimLeft(line, "#")); line != "" {
+				title = line
+				break
+			}
+		}
+	}
+	if title == "" {
+		return fallback
+	}
+	if r := []rune(title); len(r) > 100 {
+		title = string(r[:100]) + "…"
+	}
+	return title
 }
 
 // Format serializes the post to the on-disk file format:
@@ -190,6 +222,9 @@ func (p *Post) Format() []byte {
 	fmt.Fprintf(&sb, "pubkey    = %q\n", p.PubKey)
 	fmt.Fprintf(&sb, "timestamp = %q\n", p.TimestampRaw)
 	fmt.Fprintf(&sb, "parent    = %q\n", p.Parent)
+	if p.Title != "" {
+		fmt.Fprintf(&sb, "title     = %s\n", tomlString(p.Title))
+	}
 	fmt.Fprintf(&sb, "signature = %q\n", p.Signature)
 	sb.WriteString("+++\n\n")
 	sb.WriteString(p.Body)
@@ -207,34 +242,58 @@ func PostHash(content []byte) string {
 // parent is PostHash of the parent file content, or "" for a root post.
 // The caller must set Filename before writing to disk.
 func SignPost(id *crypto.Identity, parent, body string) (*Post, error) {
-	ts := time.Now().UTC()
-	tsRaw := ts.Format(time.RFC3339)
+	return Sign(id, Header{Parent: parent}, body)
+}
 
-	fields := map[string]string{
-		"author":    id.Username,
-		"pubkey":    id.Fingerprint(),
-		"timestamp": tsRaw,
-		"parent":    parent,
+// Header holds the optional, caller-chosen front matter fields of a post.
+type Header struct {
+	Parent string // PostHash of the post being answered; "" for a root post
+	Title  string // thread title; root posts only
+}
+
+// Sign creates a new post with the given header fields, signed by id.
+func Sign(id *crypto.Identity, h Header, body string) (*Post, error) {
+	if strings.ContainsAny(h.Title, "\r\n") {
+		return nil, fmt.Errorf("title must be a single line")
 	}
-	canonical := crypto.CanonicalForm(fields, body)
-
+	ts := time.Now().UTC()
+	p := &Post{
+		Author:       id.Username,
+		PubKey:       id.Fingerprint(),
+		Timestamp:    ts,
+		TimestampRaw: ts.Format(time.RFC3339),
+		Parent:       h.Parent,
+		Title:        h.Title,
+		Body:         body,
+		BodyHTML:     renderMarkdown(body),
+		SigStatus:    SigValid,
+	}
 	priv, err := id.PrivKey()
 	if err != nil {
 		return nil, fmt.Errorf("get private key: %w", err)
 	}
-	sig := crypto.Sign(priv, canonical)
+	p.Signature = crypto.Sign(priv, crypto.CanonicalForm(p.fields(), body))
+	return p, nil
+}
 
-	return &Post{
-		Author:       id.Username,
-		PubKey:       id.Fingerprint(),
-		Timestamp:    ts,
-		TimestampRaw: tsRaw,
-		Parent:       parent,
-		Signature:    sig,
-		Body:         body,
-		BodyHTML:     renderMarkdown(body),
-		SigStatus:    SigValid,
-	}, nil
+// tomlString quotes s as a TOML basic string. (Go's %q emits escapes such
+// as \x00 that TOML does not accept.)
+func tomlString(s string) string {
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			sb.WriteByte('\\')
+			sb.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&sb, "\\u%04X", r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String()
 }
 
 // TombstoneFilename returns the tombstone filename for a given post filename.
