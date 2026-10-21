@@ -77,7 +77,8 @@ func LoadCategory(fsys fs.FS, slug string) (*Category, error) {
 		if !entry.IsDir() || !ValidSlug(entry.Name()) {
 			continue
 		}
-		if exists(fsys, path.Join(slug, entry.Name(), RootFilename)) {
+		if exists(fsys, path.Join(slug, entry.Name(), RootFilename)) ||
+			exists(fsys, path.Join(slug, entry.Name(), TombstoneFilename(RootFilename))) {
 			c.ThreadSlugs = append(c.ThreadSlugs, entry.Name())
 		}
 	}

@@ -67,7 +67,11 @@ func threadSummaryFrom(scan *forum.ThreadScan) ThreadSummary {
 		}
 	}
 
+	if scan.Hidden {
+		title = "[deleted]"
+	}
 	return ThreadSummary{
+		Hidden:      scan.Hidden,
 		Slug:        scan.Slug,
 		Title:       title,
 		Author:      author,

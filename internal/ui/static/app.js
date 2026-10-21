@@ -222,10 +222,10 @@ async function viewThreadList(catSlug) {
   } else {
     h += '<div class="card-list">';
     threads.forEach(t => {
-      h += `<div class="card">
+      h += `<div class="card${t.hidden ? ' card-deleted' : ''}">
         <h2><a href="#/cat/${u(catSlug)}/thread/${u(t.slug)}">${esc(t.title)}</a></h2>
         <small>
-          by <strong>${esc(t.author)}</strong> ·
+          ${t.hidden ? '' : `by <strong>${esc(t.author)}</strong> ·`}
           ${t.reply_count} repl${t.reply_count === 1 ? 'y' : 'ies'} ·
           ${relTime(t.last_reply_at)}
         </small>
@@ -261,7 +261,7 @@ async function viewThread(catSlug, threadSlug) {
       return;
     }
     const deleteBtn = STATUS.is_admin
-      ? `<button class="btn btn-danger btn-sm" data-action="adminDelete" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}" data-filename="${esc(p.filename)}">Delete</button>`
+      ? `<button class="btn btn-danger btn-sm" data-action="showHide" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}" data-filename="${esc(p.filename)}">Hide</button>`
       : '';
     h += `<article class="post${i === 0 ? ' post-root' : ''}">
       <header class="post-meta">
@@ -355,16 +355,32 @@ async function submitNewThread({ cat: catSlug }) {
   }
 }
 
+function showHide({ cat, thread, filename }) {
+  openModal(`
+    <h2>Hide post</h2>
+    <p>Hiding adds an admin-signed tombstone: everyone sees <em>[deleted]</em>
+      instead of the post. The file stays in the repository and in git history,
+      so anyone with a copy can still read it.</p>
+    <label class="checkbox"><input type="checkbox" id="hide-purge">
+      Also remove the file from the current tree (purge). It stays in git history.</label>
+    <div class="form-actions">
+      <button class="btn btn-danger" data-action="adminDelete" data-cat="${esc(cat)}"
+        data-thread="${esc(thread)}" data-filename="${esc(filename)}">Hide</button>
+      <button class="btn" data-action="closeModal">Cancel</button>
+    </div>`);
+}
+
 async function adminDelete({ cat: catSlug, thread: threadSlug, filename }) {
-  if (!confirm(`Delete "${filename}"?\nThis creates a signed tombstone and is permanent.`)) return;
+  const purge = $('hide-purge')?.checked || false;
   try {
     await apiFetch('/admin/delete', {
       method: 'POST',
-      body:   JSON.stringify({ category: catSlug, thread: threadSlug, filename }),
+      body:   JSON.stringify({ category: catSlug, thread: threadSlug, filename, purge }),
     });
+    closeModal();
     await viewThread(catSlug, threadSlug);
   } catch (e) {
-    alert('Delete failed: ' + e.message);
+    alert('Hide failed: ' + e.message);
   }
 }
 
@@ -492,7 +508,7 @@ async function submitAddKey() {
 
 // ── Action registry ──────────────────────────────────────────────────────────
 const ACTIONS = {
-  triggerSync, submitSetup, submitReply, submitNewThread, adminDelete,
+  triggerSync, submitSetup, submitReply, submitNewThread, adminDelete, showHide,
   showAdminAddKey, showAdminCreateCategory, showJoinRequests,
   submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
   closeModal: () => closeModal(),

@@ -375,7 +375,7 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := st.Tombstone(id, req.Category, req.Thread, req.Filename); err != nil {
+	if err := st.Tombstone(id, req.Category, req.Thread, req.Filename, req.Purge); err != nil {
 		storeError(w, err)
 		return
 	}

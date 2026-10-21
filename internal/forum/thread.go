@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -65,6 +66,21 @@ func LoadThread(fsys fs.FS, category, slug string, ring *KeyRing) (*Thread, erro
 			post.Verify(ring)
 		}
 		t.Posts = append(t.Posts, post)
+	}
+
+	// Purged posts: the file was removed together with the tombstone, so only
+	// the (admin-signed) tombstone records where the post was.
+	for _, entry := range entries {
+		target, ok := strings.CutSuffix(entry.Name(), ".tomb")
+		if !ok || !ValidPostFilename(target) || exists(fsys, path.Join(dir, target)) {
+			continue
+		}
+		tomb, err := fs.ReadFile(fsys, path.Join(dir, entry.Name()))
+		if err != nil || VerifyTombstoneSignature(tomb, ring.AdminKey) != nil {
+			continue
+		}
+		ts, _ := parseFilenameTime(target)
+		t.Posts = append(t.Posts, &Post{Filename: target, Timestamp: ts, Tombstoned: true})
 	}
 
 	sort.SliceStable(t.Posts, func(i, j int) bool {

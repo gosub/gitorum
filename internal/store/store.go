@@ -319,8 +319,10 @@ func (s *Store) Reply(id *crypto.Identity, cat, slug, body string) (string, erro
 	return name, nil
 }
 
-// Tombstone hides a post by committing an admin-signed <file>.tomb.
-func (s *Store) Tombstone(admin *crypto.Identity, cat, slug, filename string) error {
+// Tombstone hides a post by committing an admin-signed <file>.tomb. With
+// purge set, the post file is also removed in the same commit, so it is no
+// longer in the current tree (it remains in git history).
+func (s *Store) Tombstone(admin *crypto.Identity, cat, slug, filename string, purge bool) error {
 	if !forum.ValidSlug(cat) || !forum.ValidSlug(slug) || !forum.ValidPostFilename(filename) {
 		return fmt.Errorf("category, thread, or filename: %w", ErrInvalid)
 	}
@@ -341,7 +343,13 @@ func (s *Store) Tombstone(admin *crypto.Identity, cat, slug, filename string) er
 		return fmt.Errorf("sign tombstone: %w", err)
 	}
 	tombRel := path.Join(cat, slug, forum.TombstoneFilename(filename))
-	return s.repo.Commit(admin, "tombstone: "+rel, map[string][]byte{tombRel: tomb.Format()}, nil)
+	var remove []string
+	msg := "hide: " + rel
+	if purge {
+		remove = []string{rel}
+		msg = "purge: " + rel
+	}
+	return s.repo.Commit(admin, msg, map[string][]byte{tombRel: tomb.Format()}, remove)
 }
 
 // CreateCategory adds <slug>/META.toml.

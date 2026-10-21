@@ -134,7 +134,11 @@ The web UI provides:
 - Thread view with rendered Markdown and per-post signature badges
 - Reply and new-thread forms
 - Admin panel (visible only when the local key matches the forum admin key)
-  for adding user keys, creating categories, and tombstoning posts
+  for adding user keys, creating categories, and hiding posts. Hiding writes
+  an admin-signed tombstone; the post file stays in the repository (and its
+  history) unless you also choose to purge it, which removes it from the
+  current tree only. Nothing can remove a post from copies others already
+  have.
 
 If the forum has not been initialized yet, the browser will show a setup
 wizard instead of the forum.

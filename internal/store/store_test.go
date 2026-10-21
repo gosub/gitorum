@@ -302,3 +302,53 @@ func TestAddKey_Rotate(t *testing.T) {
 		}
 	}
 }
+
+// ---- hide / purge ----
+
+func TestHide_RootNotLeakedInList(t *testing.T) {
+	st, admin := newStore(t)
+	if err := st.NewThread(admin, "general", "secret", "# Secret title\n\nleaked?"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tombstone(admin, "general", "secret", forum.RootFilename, false); err != nil {
+		t.Fatal(err)
+	}
+	_, scans, err := st.Threads("general")
+	if err != nil || len(scans) != 1 {
+		t.Fatalf("Threads: %v %v", scans, err)
+	}
+	if !scans[0].Hidden || scans[0].Root != nil {
+		t.Errorf("hidden root leaked in thread list: %+v", scans[0])
+	}
+}
+
+func TestPurge_RemovesFileKeepsPlaceholder(t *testing.T) {
+	st, admin := newStore(t)
+	if err := st.NewThread(admin, "general", "t", "# T"); err != nil {
+		t.Fatal(err)
+	}
+	name, err := st.Reply(admin, "general", "t", "spam spam spam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tombstone(admin, "general", "t", name, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(st.Repo().Path, "general", "t", name)); err == nil {
+		t.Error("purged file still in working tree")
+	}
+	th, err := st.Thread("general", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(th.Posts) != 2 || !th.Posts[1].Tombstoned {
+		t.Errorf("want root + [deleted] placeholder, got %+v", th.Posts)
+	}
+	_, scans, _ := st.Threads("general")
+	if scans[0].ReplyCount != 0 {
+		t.Errorf("purged reply counted: %d", scans[0].ReplyCount)
+	}
+	if problems, _ := st.Verify(); len(problems) != 0 {
+		t.Errorf("Verify after purge: %+v", problems)
+	}
+}

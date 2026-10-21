@@ -129,6 +129,18 @@ func Fingerprint(pubkeyB64 string) string {
 	return pubkeyB64
 }
 
+// VerifyTombstoneSignature checks only that tombContent is signed by
+// adminKey. It is used for purged posts, whose content is no longer
+// available to check the hash binding against.
+func VerifyTombstoneSignature(tombContent []byte, adminKey string) error {
+	tomb, err := ParsePost("tomb", tombContent)
+	if err != nil {
+		return err
+	}
+	canonical := crypto.CanonicalForm(tomb.fields(), tomb.Body)
+	return crypto.VerifyWithPublicKeyB64(adminKey, canonical, tomb.Signature)
+}
+
 // VerifyTombstone reports whether tombContent is a valid tombstone for
 // targetContent: signed by adminKey, with parent equal to the target's hash.
 // The hash binding stops a tombstone from being copied onto another post.

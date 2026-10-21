@@ -25,6 +25,7 @@ type ThreadSummary struct {
 	Author      string `json:"author"`
 	ReplyCount  int    `json:"reply_count"`
 	CreatedAt   string `json:"created_at"`
+	Hidden      bool   `json:"hidden,omitempty"` // root post tombstoned
 	LastReplyAt string `json:"last_reply_at"`
 }
 
@@ -89,6 +90,7 @@ type AdminDeleteRequest struct {
 	Category string `json:"category"`
 	Thread   string `json:"thread"`
 	Filename string `json:"filename"`
+	Purge    bool   `json:"purge"` // also remove the post file from the tree
 }
 
 type AdminAddKeyRequest struct {
