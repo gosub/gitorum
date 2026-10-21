@@ -25,12 +25,13 @@ const (
 
 // rawFrontMatter holds the TOML-decoded fields from a post's +++ block.
 type rawFrontMatter struct {
-	Author    string `toml:"author"`
-	PubKey    string `toml:"pubkey"`
-	Timestamp string `toml:"timestamp"`
-	Parent    string `toml:"parent"`
-	Title     string `toml:"title"`
-	Signature string `toml:"signature"`
+	Author     string `toml:"author"`
+	PubKey     string `toml:"pubkey"`
+	Timestamp  string `toml:"timestamp"`
+	Parent     string `toml:"parent"`
+	Title      string `toml:"title"`
+	Supersedes string `toml:"supersedes"`
+	Signature  string `toml:"signature"`
 }
 
 // Post represents a parsed and optionally signature-verified post file.
@@ -42,6 +43,7 @@ type Post struct {
 	TimestampRaw string // raw value from file, used verbatim in canonical form
 	Parent       string // sha256 hex of parent file content; empty for root
 	Title        string // thread title (root posts); optional
+	Supersedes   string // for edits: PostHash of the original post being replaced
 	Signature    string // base64-encoded ed25519 signature
 
 	// Content
@@ -54,6 +56,8 @@ type Post struct {
 	SigStatus  SigStatus // set by VerifySignature
 	SigError   string    // human-readable reason when SigStatus != SigValid
 	Tombstoned bool      // true when a tombstone file exists; body/author are cleared
+	EditedAt   time.Time // set on an original post when a valid edit replaced its body
+	EditNote   string    // set on an edit post that was not applied, with the reason
 }
 
 // ParsePost parses a .md file with TOML front matter fenced by +++.
@@ -76,6 +80,7 @@ func ParsePost(filename string, content []byte) (*Post, error) {
 		TimestampRaw: fm.Timestamp,
 		Parent:       fm.Parent,
 		Title:        fm.Title,
+		Supersedes:   fm.Supersedes,
 		Signature:    fm.Signature,
 		Body:         body,
 		BodyHTML:     renderMarkdown(body),
@@ -179,6 +184,9 @@ func (p *Post) fields() map[string]string {
 	if p.Title != "" {
 		f["title"] = p.Title
 	}
+	if p.Supersedes != "" {
+		f["supersedes"] = p.Supersedes
+	}
 	return f
 }
 
@@ -225,6 +233,9 @@ func (p *Post) Format() []byte {
 	if p.Title != "" {
 		fmt.Fprintf(&sb, "title     = %s\n", tomlString(p.Title))
 	}
+	if p.Supersedes != "" {
+		fmt.Fprintf(&sb, "supersedes = %q\n", p.Supersedes)
+	}
 	fmt.Fprintf(&sb, "signature = %q\n", p.Signature)
 	sb.WriteString("+++\n\n")
 	sb.WriteString(p.Body)
@@ -249,6 +260,8 @@ func SignPost(id *crypto.Identity, parent, body string) (*Post, error) {
 type Header struct {
 	Parent string // PostHash of the post being answered; "" for a root post
 	Title  string // thread title; root posts only
+	// Supersedes makes the post an edit of the post with this hash.
+	Supersedes string
 }
 
 // Sign creates a new post with the given header fields, signed by id.
@@ -264,6 +277,7 @@ func Sign(id *crypto.Identity, h Header, body string) (*Post, error) {
 		TimestampRaw: ts.Format(time.RFC3339),
 		Parent:       h.Parent,
 		Title:        h.Title,
+		Supersedes:   h.Supersedes,
 		Body:         body,
 		BodyHTML:     renderMarkdown(body),
 		SigStatus:    SigValid,

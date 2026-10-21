@@ -51,11 +51,12 @@ func LoadThread(fsys fs.FS, category, slug string, ring *KeyRing) (*Thread, erro
 		// revealing the original content. Forged tombstones are ignored.
 		if hiddenBy(fsys, dir, name, content, ring.AdminKey) {
 			ts, _ := parseFilenameTime(name)
-			t.Posts = append(t.Posts, &Post{
-				Filename:   name,
-				Timestamp:  ts,
-				Tombstoned: true,
-			})
+			hidden := &Post{Filename: name, Timestamp: ts, Tombstoned: true, Hash: PostHash(content)}
+			// Keep the supersedes link so edits of hidden posts stay hidden.
+			if p, err := ParsePost(name, content); err == nil {
+				hidden.Supersedes = p.Supersedes
+			}
+			t.Posts = append(t.Posts, hidden)
 			continue
 		}
 		post, err := ParsePost(name, content)
@@ -93,10 +94,58 @@ func LoadThread(fsys fs.FS, category, slug string, ring *KeyRing) (*Thread, erro
 		return t.Posts[i].Timestamp.Before(t.Posts[j].Timestamp)
 	})
 
+	t.Posts = applyEdits(t.Posts)
+
 	if len(t.Posts) > 0 && t.Posts[0].Filename == RootFilename {
 		t.Root = t.Posts[0]
 	}
 	return t, nil
+}
+
+// applyEdits folds edit posts into the posts they supersede. posts must be
+// in chronological order, so the latest valid edit wins.
+//
+// An edit is applied only when it targets an original (non-edit) post that
+// is still visible, has the same author, and is signed at least as well as
+// the original. Edits that fail these checks stay in the thread as ordinary
+// posts with EditNote explaining why, so nothing is silently dropped.
+func applyEdits(posts []*Post) []*Post {
+	byHash := map[string]*Post{}
+	for _, p := range posts {
+		if p.Hash != "" {
+			byHash[p.Hash] = p
+		}
+	}
+	out := posts[:0]
+	for _, p := range posts {
+		if p.Supersedes == "" {
+			out = append(out, p)
+			continue
+		}
+		target := byHash[p.Supersedes]
+		if p.Tombstoned || (target != nil && target.Tombstoned) {
+			continue // hiding a post hides its edits, and a hidden edit is just gone
+		}
+		switch {
+		case target == nil:
+			p.EditNote = "edit of a post that is missing"
+		case target.Supersedes != "":
+			p.EditNote = "edit of an edit"
+		case target.Author != p.Author:
+			p.EditNote = "edit by a different author"
+		case p.SigStatus != SigValid && p.SigStatus != target.SigStatus:
+			p.EditNote = "edit not signed as well as the original"
+		default:
+			target.Body, target.BodyHTML = p.Body, p.BodyHTML
+			if target.Filename == RootFilename {
+				target.Title = p.Title
+			}
+			target.EditedAt = p.Timestamp
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // NewPostFilename generates the filename for a new reply post.

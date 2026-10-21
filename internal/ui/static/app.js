@@ -271,6 +271,8 @@ async function viewThread(catSlug, threadSlug) {
   </nav>
   <h1 class="thread-title">${esc(data.title || threadSlug)}</h1>`;
 
+  POSTS = {};
+  posts.forEach(p => { POSTS[p.filename] = p; });
   posts.forEach((p, i) => {
     if (p.tombstoned) {
       h += `<article class="post post-deleted${i === 0 ? ' post-root' : ''}" id="post-${esc(p.filename)}">
@@ -291,14 +293,23 @@ async function viewThread(catSlug, threadSlug) {
     const replyBtn = STATUS.username
       ? `<button class="btn btn-sm" data-action="replyTo" data-filename="${esc(p.filename)}" data-author="${esc(p.author)}">Reply</button>`
       : '';
+    const editBtn = STATUS.username && p.author === STATUS.username && !p.edit_note
+      ? `<button class="btn btn-sm" data-action="startEdit" data-cat="${esc(catSlug)}" data-thread="${esc(threadSlug)}" data-filename="${esc(p.filename)}">Edit</button>`
+      : '';
+    const edited = p.edited_at
+      ? `<span class="edited" title="${esc(p.edited_at)}">(edited ${relTime(p.edited_at)})</span>` : '';
+    const editNote = p.edit_note
+      ? `<p class="hint">This post is an edit that was not applied: ${esc(p.edit_note)}.</p>` : '';
     h += `<article class="post${i === 0 ? ' post-root' : ''}" id="post-${esc(p.filename)}">
       <header class="post-meta">
         <span class="author">${esc(p.author)}</span>
         ${sigBadge(p)}
         <time class="ts" title="${esc(p.timestamp)}">${relTime(p.timestamp)}</time>
+        ${edited}
         ${inReplyTo}
-        <span class="post-actions">${replyBtn}${deleteBtn}</span>
+        <span class="post-actions">${replyBtn}${editBtn}${deleteBtn}</span>
       </header>
+      ${editNote}
       <div class="post-body">${p.body_html}</div>
     </article>`;
   });
@@ -362,6 +373,51 @@ function viewNewThread(catSlug) {
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
+// Posts of the thread on screen, by filename (raw bodies for editing).
+let POSTS = {};
+
+function startEdit({ cat, thread, filename }) {
+  const p = POSTS[filename];
+  const article = document.getElementById('post-' + filename);
+  if (!p || !article) return;
+  const body = article.querySelector('.post-body');
+  const isRoot = filename === '0000_root.md';
+  body.innerHTML = `
+    <form class="edit-form" data-action="submitEdit" data-cat="${esc(cat)}" data-thread="${esc(thread)}" data-filename="${esc(filename)}">
+      ${isRoot ? `<label>Title <input type="text" name="title" value="${esc(p.title || '')}"></label>` : ''}
+      <textarea name="body" rows="8">${esc(p.body)}</textarea>
+      <p class="hint">The original stays in the repository history; readers see this version.</p>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn" data-action="cancelEdit" data-cat="${esc(cat)}" data-thread="${esc(thread)}">Cancel</button>
+      </div>
+    </form>`;
+  body.querySelector('textarea').focus();
+}
+
+function cancelEdit({ cat, thread }) { viewThread(cat, thread); }
+
+async function submitEdit({ cat, thread, filename }, form) {
+  const title = form.elements.title ? form.elements.title.value.trim() : '';
+  const body = form.elements.body.value.trim();
+  if (!body) return;
+  try {
+    const res = await apiFetch(`/threads/${u(cat)}/${u(thread)}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ filename, title, body }),
+    });
+    reportPush(res);
+    await viewThread(cat, thread);
+  } catch (e) {
+    alert('Edit failed: ' + e.message);
+  }
+}
+
+// reportPush tells the user when a write was saved locally but not shared.
+function reportPush(res) {
+  if (res && res.pushed === false) alert(res.message || 'Saved locally, but not pushed.');
+}
+
 // togglePreview swaps a textarea for its server-rendered preview.
 async function togglePreview({ target }, btn) {
   const ta = $(target), pv = $(target + '-preview');
@@ -602,7 +658,7 @@ async function submitAddKey() {
 // ── Action registry ──────────────────────────────────────────────────────────
 const ACTIONS = {
   triggerSync, submitSetup, submitReply, submitNewThread, adminDelete, showHide,
-  replyTo, cancelReplyTo, scrollToPost, togglePreview,
+  replyTo, cancelReplyTo, scrollToPost, togglePreview, startEdit, cancelEdit, submitEdit,
   showAdminAddKey, showAdminCreateCategory, showJoinRequests,
   submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
   closeModal: () => closeModal(),

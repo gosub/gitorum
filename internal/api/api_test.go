@@ -936,3 +936,21 @@ func TestPreview(t *testing.T) {
 		t.Errorf("unsafe HTML passed through: %s", resp.BodyHTML)
 	}
 }
+
+func TestHandleEdit(t *testing.T) {
+	srv := setupForum(t)
+	w := hitJSON(t, srv, "POST", "/api/threads/general/hello-world/edit",
+		map[string]string{"filename": forum.RootFilename, "title": "Edited", "body": "new body"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	w = hit(t, srv, "GET", "/api/threads/general/hello-world")
+	var thread api.ThreadResponse
+	decodeJSON(t, w, &thread)
+	if thread.Title != "Edited" || thread.Posts[0].Body != "new body" || thread.Posts[0].EditedAt == "" {
+		t.Errorf("after edit: title %q body %q edited %q", thread.Title, thread.Posts[0].Body, thread.Posts[0].EditedAt)
+	}
+	if len(thread.Posts) != 2 {
+		t.Errorf("edit should not add a visible post; got %d posts", len(thread.Posts))
+	}
+}

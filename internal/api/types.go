@@ -52,6 +52,8 @@ type PostResponse struct {
 	Filename   string `json:"filename"`
 	SigStatus  string `json:"sig_status"`
 	SigError   string `json:"sig_error,omitempty"`
+	EditedAt   string `json:"edited_at,omitempty"` // RFC3339; set when an edit replaced the body
+	EditNote   string `json:"edit_note,omitempty"` // why an edit post was not applied
 	Tombstoned bool   `json:"tombstoned,omitempty"`
 }
 
@@ -83,6 +85,12 @@ type SetupRequest struct {
 type ReplyRequest struct {
 	Body    string `json:"body"`
 	ReplyTo string `json:"reply_to"` // filename of the post answered; "" = root
+}
+
+type EditRequest struct {
+	Filename string `json:"filename"` // the original post to replace
+	Title    string `json:"title"`    // root posts only
+	Body     string `json:"body"`
 }
 
 type NewThreadRequest struct {

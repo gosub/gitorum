@@ -43,6 +43,7 @@ pubkey    = "Aa1b2c3d"          <- first 8 chars of base64 pubkey (fingerprint)
 timestamp = "2026-02-17T10:00:00Z"
 parent    = ""                  <- sha256 hex of the post answered; "" for root
 title     = "Thread title"      <- optional, root posts; signed only when present
+supersedes = "<sha256 hex>"     <- optional; makes this post an edit of that post
 signature = "<base64 Ed25519 sig>"
 +++
 

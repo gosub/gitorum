@@ -28,7 +28,7 @@ import (
 var (
 	ErrNotFound  = errors.New("not found")
 	ErrExists    = errors.New("already exists")
-	ErrForbidden = errors.New("admin access required")
+	ErrForbidden = errors.New("forbidden")
 	ErrInvalid   = errors.New("invalid input")
 )
 
@@ -182,11 +182,11 @@ func (s *Store) Threads(cat string) (*forum.Category, []*forum.ThreadScan, error
 	}
 	scans := make([]*forum.ThreadScan, 0, len(c.ThreadSlugs))
 	for _, slug := range c.ThreadSlugs {
-		scan, err := forum.ScanThread(v.fs, cat, slug, v.ring)
+		t, err := v.thread(cat, slug)
 		if err != nil {
 			continue
 		}
-		scans = append(scans, scan)
+		scans = append(scans, forum.Summarize(t))
 	}
 	// LastReplyAt values are all RFC3339 in UTC, so they sort as strings.
 	sort.SliceStable(scans, func(i, j int) bool { return scans[i].LastReplyAt > scans[j].LastReplyAt })
@@ -264,7 +264,7 @@ func (s *Store) JoinRequests() ([]JoinRequest, error) {
 
 func (s *Store) requireAdmin(id *crypto.Identity) error {
 	if !s.IsAdmin(id) {
-		return ErrForbidden
+		return fmt.Errorf("admin access required: %w", ErrForbidden)
 	}
 	return nil
 }
@@ -356,6 +356,51 @@ func (s *Store) Reply(id *crypto.Identity, cat, slug, body, replyTo string) (str
 		return "", err
 	}
 	return name, nil
+}
+
+// Edit replaces the body (and, for a root post, the title) of one of id's
+// own posts by committing a new post that supersedes it. The original stays
+// in the repository; readers see the latest edit.
+func (s *Store) Edit(id *crypto.Identity, cat, slug, filename, title, body string) error {
+	if strings.TrimSpace(body) == "" && strings.TrimSpace(title) == "" {
+		return fmt.Errorf("body is required: %w", ErrInvalid)
+	}
+	if !forum.ValidPostFilename(filename) {
+		return fmt.Errorf("filename %q: %w", filename, ErrInvalid)
+	}
+	v, err := s.current()
+	if err != nil {
+		return err
+	}
+	t, err := v.thread(cat, slug)
+	if err != nil {
+		return err
+	}
+	var target *forum.Post
+	for _, p := range t.Posts {
+		if p.Filename == filename {
+			target = p
+		}
+	}
+	switch {
+	case target == nil || target.Tombstoned:
+		return fmt.Errorf("post %s: %w", filename, ErrNotFound)
+	case target.Supersedes != "":
+		return fmt.Errorf("cannot edit an edit; edit the original post: %w", ErrInvalid)
+	case target.Author != id.Username:
+		return fmt.Errorf("only the author can edit a post: %w", ErrForbidden)
+	}
+	h := forum.Header{Parent: target.Parent, Supersedes: target.Hash}
+	if filename == forum.RootFilename {
+		h.Title = strings.TrimSpace(title)
+	}
+	post, err := forum.Sign(id, h, body)
+	if err != nil {
+		return fmt.Errorf("sign edit: %v: %w", err, ErrInvalid)
+	}
+	content := post.Format()
+	rel := path.Join(cat, slug, forum.NewPostFilename(content))
+	return s.repo.Commit(id, "edit: "+path.Join(cat, slug, filename), map[string][]byte{rel: content}, nil)
 }
 
 // Tombstone hides a post by committing an admin-signed <file>.tomb. With

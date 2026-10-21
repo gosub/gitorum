@@ -330,7 +330,7 @@ func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !st.IsAdmin(id) {
-		storeError(w, store.ErrForbidden)
+		apiError(w, http.StatusForbidden, "admin access required")
 		return
 	}
 	requests, err := st.JoinRequests()
@@ -411,7 +411,7 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !st.IsAdmin(id) {
-		storeError(w, store.ErrForbidden)
+		apiError(w, http.StatusForbidden, "admin access required")
 		return
 	}
 	var err error
@@ -436,4 +436,23 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, PreviewResponse{BodyHTML: forum.RenderMarkdown(req.Body)})
+}
+
+// POST /api/threads/{cat}/{thread}/edit
+func (s *Server) handleEdit(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	var req EditRequest
+	if err := readJSON(r, &req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	st, id, ok := s.ready(w, true)
+	if !ok {
+		return
+	}
+	if err := st.Edit(id, r.PathValue("cat"), r.PathValue("thread"), req.Filename, req.Title, req.Body); err != nil {
+		storeError(w, err)
+		return
+	}
+	pushAfterWrite(w, st, http.StatusCreated)
 }

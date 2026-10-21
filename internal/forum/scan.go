@@ -1,85 +1,58 @@
 package forum
 
 import (
-	"fmt"
 	"io/fs"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// ThreadScan holds the lightweight data needed to build a thread-list entry.
-// Only the root post is fully parsed; replies are counted from filenames.
+// ThreadScan holds the data needed to build a thread-list entry.
 type ThreadScan struct {
 	Slug        string
-	Root        *Post // nil if 0000_root.md is missing or unparseable
-	Hidden      bool  // the root post is tombstoned; Root is nil
-	ReplyCount  int
-	LastReplyAt string // RFC3339 timestamp of newest reply, or root's timestamp
+	Root        *Post  // nil when the root post is hidden or missing
+	Hidden      bool   // the root post is tombstoned
+	ReplyCount  int    // visible replies (edits and hidden posts excluded)
+	LastReplyAt string // RFC3339 time of the newest visible post
 }
 
-// ScanThread reads only the root post of <category>/<slug> and counts reply
-// files. It is much cheaper than LoadThread for building thread-list views.
+// ScanThread loads <category>/<slug> and summarizes it.
 func ScanThread(fsys fs.FS, category, slug string, ring *KeyRing) (*ThreadScan, error) {
-	if !ValidSlug(category) || !ValidSlug(slug) {
-		return nil, fmt.Errorf("invalid thread path %s/%s: %w", category, slug, fs.ErrNotExist)
-	}
-	dir := path.Join(category, slug)
-	content, err := fs.ReadFile(fsys, path.Join(dir, RootFilename))
-	if isNotExist(err) {
-		// Purged root: the thread stays listed only with a valid tombstone.
-		tomb, terr := fs.ReadFile(fsys, path.Join(dir, TombstoneFilename(RootFilename)))
-		if terr != nil || VerifyTombstoneSignature(tomb, ring.AdminKey) != nil {
-			return nil, fmt.Errorf("read root post: %w", err)
-		}
-		content, err = nil, nil
-	}
+	t, err := LoadThread(fsys, category, slug, ring)
 	if err != nil {
-		return nil, fmt.Errorf("read root post: %w", err)
+		return nil, err
 	}
-	var root *Post
-	lastAt := ""
-	hidden := content == nil || hiddenBy(fsys, dir, RootFilename, content, ring.AdminKey)
-	if !hidden {
-		if root, err = ParsePost(RootFilename, content); err != nil {
-			return nil, fmt.Errorf("parse root post: %w", err)
-		}
-		root.Verify(ring)
-		lastAt = root.TimestampRaw
-	}
+	return Summarize(t), nil
+}
 
-	entries, err := fs.ReadDir(fsys, dir)
-	if err != nil {
-		return nil, fmt.Errorf("read thread dir: %w", err)
-	}
-
-	replyCount := 0
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !ValidPostFilename(name) || name == RootFilename {
-			continue
-		}
-		// Skip replies hidden by a valid tombstone.
-		if exists(fsys, path.Join(dir, TombstoneFilename(name))) {
-			if content, err := fs.ReadFile(fsys, path.Join(dir, name)); err == nil &&
-				hiddenBy(fsys, dir, name, content, ring.AdminKey) {
+// Summarize builds a thread-list entry from a loaded thread.
+func Summarize(t *Thread) *ThreadScan {
+	s := &ThreadScan{Slug: t.Slug}
+	var last time.Time
+	for _, p := range t.Posts {
+		if p.Filename == RootFilename {
+			if p.Tombstoned {
+				s.Hidden = true
 				continue
 			}
+			s.Root = p
+		} else if p.Tombstoned {
+			continue
+		} else {
+			s.ReplyCount++
 		}
-		replyCount++
-		if ts, ok := parseFilenameTime(name); ok {
-			lastAt = ts.UTC().Format(time.RFC3339)
+		at := p.Timestamp
+		if ts, ok := parseFilenameTime(p.Filename); ok {
+			at = ts // millisecond precision
+		}
+		if at.After(last) {
+			last = at
 		}
 	}
-
-	return &ThreadScan{
-		Slug:        slug,
-		Root:        root,
-		Hidden:      hidden,
-		ReplyCount:  replyCount,
-		LastReplyAt: lastAt,
-	}, nil
+	if !last.IsZero() {
+		s.LastReplyAt = last.UTC().Format(time.RFC3339)
+	}
+	return s
 }
 
 // parseFilenameTime extracts the UTC timestamp embedded in a reply filename.

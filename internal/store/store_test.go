@@ -482,3 +482,73 @@ func TestThreads_SortedByActivity(t *testing.T) {
 		t.Errorf("most active thread first: got %s", scans[0].Slug)
 	}
 }
+
+// ---- edits ----
+
+func TestEdit(t *testing.T) {
+	st, admin := newStore(t)
+	bob := newIdentity(t, "bob")
+	if err := st.AddKey(admin, "bob", bob.PublicKey, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.NewThread(admin, "general", "Original title", "t", "original root"); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := st.Reply(bob, "general", "t", "typo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.Edit(bob, "general", "t", reply, "", "fixed"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if err := st.Edit(admin, "general", "t", forum.RootFilename, "New title", "new root"); err != nil {
+		t.Fatalf("edit root: %v", err)
+	}
+	if err := st.Edit(admin, "general", "t", reply, "", "admin rewrites bob"); !errors.Is(err, store.ErrForbidden) {
+		t.Errorf("editing someone else's post: %v", err)
+	}
+
+	th, _ := st.Thread("general", "t")
+	if len(th.Posts) != 2 {
+		t.Fatalf("edits should fold into their originals; got %d posts", len(th.Posts))
+	}
+	if th.Root.Title != "New title" || th.Root.Body != "new root" || th.Root.EditedAt.IsZero() {
+		t.Errorf("root after edit: %q %q edited=%v", th.Root.Title, th.Root.Body, th.Root.EditedAt)
+	}
+	if th.Posts[1].Body != "fixed" || th.Posts[1].Author != "bob" {
+		t.Errorf("reply after edit: %+v", th.Posts[1])
+	}
+	_, scans, _ := st.Threads("general")
+	if scans[0].ReplyCount != 1 || scans[0].Root.Title != "New title" {
+		t.Errorf("summary: replies=%d title=%q", scans[0].ReplyCount, scans[0].Root.Title)
+	}
+
+	// A forged edit (another author superseding bob's post) is shown as a
+	// normal post with a note, not applied.
+	forged, _ := forum.Sign(admin, forum.Header{Supersedes: th.Posts[1].Hash}, "forged")
+	content := forged.Format()
+	if err := st.Repo().Commit(admin, "forge", map[string][]byte{
+		"general/t/" + forum.NewPostFilename(content): content,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	th, _ = st.Thread("general", "t")
+	if th.Posts[1].Body != "fixed" {
+		t.Error("forged edit was applied")
+	}
+	if last := th.Posts[len(th.Posts)-1]; last.EditNote == "" {
+		t.Error("rejected edit carries no note")
+	}
+
+	// Hiding the original hides its edits too.
+	if err := st.Tombstone(admin, "general", "t", reply, false); err != nil {
+		t.Fatal(err)
+	}
+	th, _ = st.Thread("general", "t")
+	for _, p := range th.Posts {
+		if p.Body == "fixed" {
+			t.Error("edit of a hidden post is still visible")
+		}
+	}
+}

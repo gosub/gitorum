@@ -19,6 +19,8 @@ no vendor lock-in, no API terms of service.
 The core design decisions follow from this premise:
 
 - **Append-only by default.** Posts are new files; nothing is edited in place.
+  Editing a post adds a new signed file that supersedes it (`supersedes` =
+  hash of the original); readers see the latest version by the same author.
   The git log is the audit trail, and history rewriting is as visible as it is
   in any git repository.
 - **Cryptographic authorship, not identity gatekeeping.** Anyone can write a

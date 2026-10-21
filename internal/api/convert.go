@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/gosub/gitorum/internal/forum"
 )
 
@@ -15,7 +17,13 @@ func postToResponse(p *forum.Post) PostResponse {
 			Tombstoned: true,
 		}
 	}
+	editedAt := ""
+	if !p.EditedAt.IsZero() {
+		editedAt = p.EditedAt.UTC().Format(time.RFC3339)
+	}
 	return PostResponse{
+		EditedAt:  editedAt,
+		EditNote:  p.EditNote,
 		Author:    p.Author,
 		PubKey:    p.PubKey,
 		Timestamp: p.TimestampRaw,
