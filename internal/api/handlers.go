@@ -323,7 +323,7 @@ func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := make([]JoinRequestSummary, 0, len(requests))
 	for _, req := range requests {
-		summaries = append(summaries, JoinRequestSummary{Username: req.Username, PubKey: req.PubKey})
+		summaries = append(summaries, JoinRequestSummary{Username: req.Username, PubKey: req.PubKey, Problem: req.Problem})
 	}
 	writeJSON(w, http.StatusOK, JoinRequestsResponse{Requests: summaries})
 }
@@ -397,7 +397,13 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, store.ErrForbidden)
 		return
 	}
-	if err := st.AddKey(id, req.Username, req.PubKey, req.Rotate); err != nil {
+	var err error
+	if req.Token != "" {
+		_, err = st.AddKeyFromToken(id, req.Token)
+	} else {
+		err = st.AddKey(id, req.Username, req.PubKey, req.Rotate)
+	}
+	if err != nil {
 		storeError(w, err)
 		return
 	}

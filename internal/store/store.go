@@ -220,6 +220,7 @@ func (v *view) thread(cat, slug string) (*forum.Thread, error) {
 type JoinRequest struct {
 	Username string
 	PubKey   string
+	Problem  string // non-empty when the proof of key possession is missing or invalid
 }
 
 // JoinRequests returns pending requests whose username has no key yet.
@@ -245,7 +246,12 @@ func (s *Store) JoinRequests() ([]JoinRequest, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, JoinRequest{Username: user, PubKey: strings.TrimSpace(string(data))})
+		req := JoinRequest{Username: user}
+		var verr error
+		if req.PubKey, verr = forum.VerifyJoinRequest(user, data); verr != nil {
+			req.Problem = verr.Error()
+		}
+		out = append(out, req)
 	}
 	return out, nil
 }
@@ -471,6 +477,16 @@ func (s *Store) Certify(admin *crypto.Identity, usernames ...string) error {
 	return s.repo.Commit(admin, "keys: certify "+strings.Join(usernames, ", "), files, nil)
 }
 
+// AddKeyFromToken registers the user and key from an out-of-band join token
+// (see forum.SignJoinRequest), after verifying its signature.
+func (s *Store) AddKeyFromToken(admin *crypto.Identity, token string) (string, error) {
+	username, pubkey, err := forum.ParseJoinToken(token)
+	if err != nil {
+		return "", fmt.Errorf("%v: %w", err, ErrInvalid)
+	}
+	return username, s.AddKey(admin, username, pubkey, false)
+}
+
 // SubmitJoinRequest writes requests/<username>.pub with id's public key.
 // The caller should Push to share it.
 func (s *Store) SubmitJoinRequest(id *crypto.Identity) error {
@@ -480,9 +496,12 @@ func (s *Store) SubmitJoinRequest(id *crypto.Identity) error {
 	if s.HasKey(id.Username) {
 		return fmt.Errorf("@%s is already registered: %w", id.Username, ErrExists)
 	}
+	file, _, err := forum.SignJoinRequest(id)
+	if err != nil {
+		return err
+	}
 	rel := path.Join(RequestsDir, id.Username+".pub")
-	return s.repo.Commit(id, "request: join request from "+id.Username,
-		map[string][]byte{rel: []byte(id.PublicKey + "\n")}, nil)
+	return s.repo.Commit(id, "request: join request from "+id.Username, map[string][]byte{rel: file}, nil)
 }
 
 // ApproveJoinRequest moves requests/<username>.pub into keys/ in one commit.
@@ -496,6 +515,9 @@ func (s *Store) ApproveJoinRequest(admin *crypto.Identity, username string) erro
 	req, err := s.findRequest(username)
 	if err != nil {
 		return err
+	}
+	if req.Problem != "" {
+		return fmt.Errorf("cannot approve @%s: %s: %w", username, req.Problem, ErrInvalid)
 	}
 	if s.HasKey(username) {
 		return fmt.Errorf("username @%s already has a key: %w", username, ErrExists)
@@ -553,6 +575,9 @@ func (s *Store) Sync(id *crypto.Identity) (repo.SyncResult, error) {
 		return res, err
 	}
 	for _, r := range reqs {
+		if r.Problem != "" {
+			continue // unsigned or forged requests always need a human
+		}
 		if err := s.ApproveJoinRequest(id, r.Username); err != nil {
 			return res, fmt.Errorf("auto-approve %s: %w", r.Username, err)
 		}

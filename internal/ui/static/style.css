@@ -225,3 +225,4 @@ input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow:
 label.checkbox { display: flex; gap: .4rem; align-items: center; font-weight: 400; }
 label.checkbox input { width: auto; }
 .card-deleted h2 a { color: var(--muted); font-style: italic; }
+.hint { color: var(--muted); font-size: .85rem; }

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
 	"github.com/gosub/gitorum/internal/store"
 )
@@ -15,25 +16,30 @@ import (
 var requestCmd = &cobra.Command{
 	Use:   "request",
 	Short: "Submit a join request to a forum",
-	Long: `Submit a join request by adding your public key to the requests/ directory.
+	Long: `Ask the forum admin to register your key.
 
-The forum admin will see the request on their next sync and can approve or
-reject it from the admin panel. Once approved, your posts will display a
-signature-verified badge.
+By default the request is committed to requests/<username>.pub in a cloned
+forum repository and pushed. That needs push access to the forum remote.
 
-Your identity must already exist (run 'gitorum keygen' first).
-You must have already cloned the forum repo (run 'gitorum clone' first).`,
+With --print, nothing is written: a one-line signed token is printed
+instead. Send it to the admin by any channel (mail, chat); they paste it
+into "Add user key" or run 'gitorum approve <token>'.
+
+Both forms are signed with your key, proving you hold it.
+Your identity must already exist (run 'gitorum keygen' first).`,
 	RunE: runRequest,
 }
 
 var (
 	requestRepoPath string
 	requestIdentity string
+	requestPrint    bool
 )
 
 func init() {
 	requestCmd.Flags().StringVar(&requestRepoPath, "repo", ".", "path to the forum git repository")
 	requestCmd.Flags().StringVar(&requestIdentity, "identity", "", "path to identity file (default: "+defaultIdentityHint()+")")
+	requestCmd.Flags().BoolVar(&requestPrint, "print", false, "print a signed join token instead of committing a request")
 	rootCmd.AddCommand(requestCmd)
 }
 
@@ -45,6 +51,15 @@ func runRequest(cmd *cobra.Command, args []string) error {
 	id, err := crypto.LoadIdentity(identPath)
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
+	}
+
+	if requestPrint {
+		_, token, err := forum.SignJoinRequest(id)
+		if err != nil {
+			return err
+		}
+		fmt.Println(token)
+		return nil
 	}
 
 	absRepo, err := filepath.Abs(requestRepoPath)

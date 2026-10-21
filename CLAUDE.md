@@ -30,7 +30,7 @@ Go version: 1.23 (net/http path parameters via `r.PathValue`)
 | `internal/store` | Forum operations and on-disk layout; cached reads from HEAD, writes via `repo.Commit` |
 | `internal/api` | HTTP server, JSON handlers |
 | `internal/ui` | `//go:embed static` — index.html, style.css, app.js |
-| `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request, verify, certify |
+| `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request, approve, verify, certify |
 
 ## Post file format
 

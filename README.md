@@ -188,16 +188,26 @@ trusted. Verify each key with its owner first.
 ### `gitorum request`
 
 ```sh
-gitorum request [--repo .] [--identity <path>]
+gitorum request [--repo .] [--identity <path>] [--print]
 ```
 
-Submits a join request to a forum by writing your public key to
-`requests/<username>.pub` in the forum repository and pushing to the remote.
-The forum admin will see a pending request count in their sidebar and can
-approve or reject it from the admin panel.
+Asks the admin to register your key. Every request is signed with your key,
+proving you hold it; requests without a valid signature cannot be approved.
 
-Your identity must already exist (run `gitorum keygen` first) and you must
-have already cloned the forum repository (run `gitorum clone` first).
+- Without `--print`: commits `requests/<username>.pub` to a cloned forum and
+  pushes it. This needs push access to the forum remote.
+- With `--print`: writes nothing and prints a one-line token
+  (`gitorum-join:…`). Send it to the admin through any channel. This is the
+  way in when you cannot push to the remote.
+
+### `gitorum approve`
+
+```sh
+gitorum approve <username | join-token> [--repo .] [--identity <path>] [--no-push]
+```
+
+Admin only. Registers and certifies the key from a pending request or a
+join token. The admin panel offers the same actions.
 
 ## Mini tutorial
 
@@ -250,7 +260,7 @@ gitorum keygen --username bob
 gitorum clone git@github.com:alice/my-forum.git
 ```
 
-Bob then submits a join request:
+Bob then submits a join request. If he can push to the forum remote:
 
 ```sh
 gitorum request --repo my-forum
@@ -260,14 +270,22 @@ gitorum request --repo my-forum
 
 Alice clicks the sync button in the sidebar. The admin panel shows a pending
 count on the "Join Requests" button. Alice clicks it, reviews Bob's public
-key, and clicks Approve. The key is committed to `keys/bob.pub` and pushed.
+key, and clicks Approve. The key and Alice's certificate for it are
+committed to `keys/` and pushed.
 
-Alternatively, Alice can enable automatic approval so join requests are
-approved whenever she syncs:
+If Bob cannot push, he runs `gitorum request --print` and sends Alice the
+token; she pastes it into "Add User Key" or runs `gitorum approve <token>`.
+
+Alternatively, Alice can enable automatic approval so signed join requests
+are approved whenever she syncs:
 
 ```sh
 gitorum config --repo my-forum --auto-approve
 ```
+
+Auto-approval lets anyone who can push to the remote become a trusted
+member under any unused username, so only enable it when push access is
+itself restricted to people you trust.
 
 Bob starts his own local server and syncs to pick up the approval:
 

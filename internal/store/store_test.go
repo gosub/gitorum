@@ -352,3 +352,56 @@ func TestPurge_RemovesFileKeepsPlaceholder(t *testing.T) {
 		t.Errorf("Verify after purge: %+v", problems)
 	}
 }
+
+// ---- signed join requests ----
+
+func TestJoinRequest_RequiresProofOfPossession(t *testing.T) {
+	st, admin := newStore(t)
+	victim, mallory := newIdentity(t, "victim"), newIdentity(t, "mallory")
+
+	// Mallory files a request under someone else's name and key, unsigned,
+	// and one claiming her own key but with a signature by another key.
+	victimFile, _, _ := forum.SignJoinRequest(victim)
+	forged := []byte(mallory.PublicKey + "\n" + strings.Split(string(victimFile), "\n")[1] + "\n")
+	if err := st.Repo().Commit(mallory, "requests", map[string][]byte{
+		"requests/victim.pub":  []byte(victim.PublicKey + "\n"),
+		"requests/mallory.pub": forged,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _ := st.JoinRequests()
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requests", len(reqs))
+	}
+	for _, r := range reqs {
+		if r.Problem == "" {
+			t.Errorf("@%s: forged request accepted as valid", r.Username)
+		}
+		if err := st.ApproveJoinRequest(admin, r.Username); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("@%s approve: got %v, want ErrInvalid", r.Username, err)
+		}
+	}
+}
+
+func TestJoinToken(t *testing.T) {
+	st, admin := newStore(t)
+	bob := newIdentity(t, "bob")
+	_, token, err := forum.SignJoinRequest(bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(token, ":bob:", ":rob:", 1)
+	if _, err := st.AddKeyFromToken(admin, tampered); !errors.Is(err, store.ErrInvalid) {
+		t.Errorf("tampered token: got %v, want ErrInvalid", err)
+	}
+	user, err := st.AddKeyFromToken(admin, token)
+	if err != nil || user != "bob" {
+		t.Fatalf("AddKeyFromToken: %q %v", user, err)
+	}
+	if err := st.NewThread(bob, "general", "hi", "# hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigValid {
+		t.Errorf("post after token approval: %v", got)
+	}
+}

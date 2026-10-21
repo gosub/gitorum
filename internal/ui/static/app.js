@@ -387,6 +387,10 @@ async function adminDelete({ cat: catSlug, thread: threadSlug, filename }) {
 function showAdminAddKey() {
   openModal(`
     <h2>Add User Key</h2>
+    <label>Join token <small style="font-weight:400">(from <code>gitorum request --print</code>)</small>
+      <input type="text" id="ak-token" placeholder="gitorum-join:…">
+    </label>
+    <p class="hint">Or enter the username and key directly:</p>
     <label>Username
       <input type="text" id="ak-username" placeholder="alice">
     </label>
@@ -457,8 +461,9 @@ async function showJoinRequests() {
       h += `<div class="join-req-item">
         <strong>@${esc(req.username)}</strong>
         <div class="join-req-key">${esc(req.pubkey)}</div>
+        ${req.problem ? `<p class="error-msg">Cannot approve: ${esc(req.problem)}</p>` : ''}
         <div class="form-actions" style="margin-top:.4rem">
-          <button class="btn btn-primary btn-sm" data-action="approveJoinRequest" data-username="${esc(req.username)}">Approve</button>
+          <button class="btn btn-primary btn-sm" data-action="approveJoinRequest" data-username="${esc(req.username)}" ${req.problem ? 'disabled' : ''}>Approve</button>
           <button class="btn btn-danger btn-sm" data-action="rejectJoinRequest" data-username="${esc(req.username)}">Reject</button>
         </div>
       </div>`;
@@ -493,14 +498,15 @@ async function submitAddKey() {
   const username = $('ak-username').value.trim();
   const pubkey   = $('ak-pubkey').value.trim();
   const rotate   = $('ak-rotate').checked;
-  if (!username || !pubkey) { alert('Both fields are required.'); return; }
+  const token    = $('ak-token').value.trim();
+  if (!token && (!username || !pubkey)) { alert('Paste a join token, or enter a username and key.'); return; }
   try {
     await apiFetch('/admin/addkey', {
       method: 'POST',
-      body:   JSON.stringify({ username, pubkey, rotate }),
+      body:   JSON.stringify({ username, pubkey, rotate, token }),
     });
     closeModal();
-    alert(`Key for @${username} added.`);
+    alert(token ? 'Key added from join token.' : `Key for @${username} added.`);
   } catch (e) {
     alert('Error: ' + e.message);
   }

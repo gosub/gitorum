@@ -97,6 +97,7 @@ type AdminAddKeyRequest struct {
 	Username string `json:"username"`
 	PubKey   string `json:"pubkey"`
 	Rotate   bool   `json:"rotate"` // append to an existing user's keys
+	Token    string `json:"token"`  // signed join token; replaces username/pubkey
 }
 
 type CreateCategoryRequest struct {
@@ -112,6 +113,7 @@ type JoinRequestsResponse struct {
 type JoinRequestSummary struct {
 	Username string `json:"username"`
 	PubKey   string `json:"pubkey"`
+	Problem  string `json:"problem,omitempty"` // proof of key possession missing/invalid
 }
 
 type ApproveRejectRequest struct {
