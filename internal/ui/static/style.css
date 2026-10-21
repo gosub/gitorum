@@ -231,3 +231,5 @@ label.checkbox input { width: auto; }
 .post-highlight { outline: 2px solid var(--accent); transition: outline .3s; }
 .thread-title { margin-bottom: 1rem; }
 details.advanced summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin-bottom: .5rem; }
+.badge-new { background: var(--accent); color: #fff; margin-left: .4rem; font-size: .7rem; vertical-align: middle; }
+.card-unread h2 a { font-weight: 700; }

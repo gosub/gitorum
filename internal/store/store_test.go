@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosub/gitorum/internal/crypto"
 	"github.com/gosub/gitorum/internal/forum"
@@ -459,5 +460,25 @@ func TestNewThread_TitleAndSlug(t *testing.T) {
 	th, _ := st.Thread("general", "hello-world")
 	if th.Root.Title != "Hello, World!" || th.Root.Body != "body" {
 		t.Errorf("root: title %q body %q", th.Root.Title, th.Root.Body)
+	}
+}
+
+func TestThreads_SortedByActivity(t *testing.T) {
+	st, admin := newStore(t)
+	for _, title := range []string{"aaa", "bbb", "ccc"} {
+		if _, err := st.NewThread(admin, "general", title, "", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(1100 * time.Millisecond) // timestamps have second resolution
+	if _, err := st.Reply(admin, "general", "aaa", "bump", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, scans, err := st.Threads("general")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scans[0].Slug != "aaa" {
+		t.Errorf("most active thread first: got %s", scans[0].Slug)
 	}
 }

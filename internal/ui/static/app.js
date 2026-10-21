@@ -107,6 +107,19 @@ function flash(color) {
   setTimeout(() => { dot.className = `dot ${color}`; }, 800);
 }
 
+// ── Unread tracking ──────────────────────────────────────────────────────────
+// Per-browser convenience: remembers the newest activity seen in each thread.
+// Storage can be unavailable (private mode), so every access is guarded.
+function seenKey(cat, slug) { return `gitorum.seen.${cat}/${slug}`; }
+
+function seenAt(cat, slug) {
+  try { return localStorage.getItem(seenKey(cat, slug)) || ''; } catch (_) { return ''; }
+}
+
+function markSeen(cat, slug, iso) {
+  try { if (iso) localStorage.setItem(seenKey(cat, slug), iso); } catch (_) {}
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 function route() {
   if (!STATUS.initialized) return viewSetup();
@@ -222,8 +235,11 @@ async function viewThreadList(catSlug) {
   } else {
     h += '<div class="card-list">';
     threads.forEach(t => {
-      h += `<div class="card${t.hidden ? ' card-deleted' : ''}">
-        <h2><a href="#/cat/${u(catSlug)}/thread/${u(t.slug)}">${esc(t.title)}</a></h2>
+      const seen = seenAt(catSlug, t.slug);
+      const unread = !t.hidden && (!seen || new Date(t.last_reply_at) > new Date(seen));
+      h += `<div class="card${t.hidden ? ' card-deleted' : ''}${unread ? ' card-unread' : ''}">
+        <h2><a href="#/cat/${u(catSlug)}/thread/${u(t.slug)}">${esc(t.title)}</a>
+          ${unread ? `<span class="badge badge-new">${seen ? 'new replies' : 'new'}</span>` : ''}</h2>
         <small>
           ${t.hidden ? '' : `by <strong>${esc(t.author)}</strong> ·`}
           ${t.reply_count} repl${t.reply_count === 1 ? 'y' : 'ies'} ·
@@ -301,6 +317,16 @@ async function viewThread(catSlug, threadSlug) {
       </section>`;
 
   render(h);
+
+  // Remember the newest activity seen here; reply filenames are timestamped
+  // in milliseconds, post timestamps in seconds, so use the larger.
+  let newest = '';
+  posts.forEach(p => {
+    const m = /^(\d{13,})_/.exec(p.filename || '');
+    const t = m ? new Date(Number(m[1])).toISOString() : p.timestamp;
+    if (t && (!newest || new Date(t) > new Date(newest))) newest = t;
+  });
+  markSeen(catSlug, threadSlug, newest);
 }
 
 function viewNewThread(catSlug) {

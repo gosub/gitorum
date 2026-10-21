@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 
@@ -168,7 +169,8 @@ func (s *Store) Categories() ([]*forum.Category, error) {
 	return cats, nil
 }
 
-// Threads returns a category and lightweight summaries of its threads.
+// Threads returns a category and lightweight summaries of its threads,
+// most recently active first.
 func (s *Store) Threads(cat string) (*forum.Category, []*forum.ThreadScan, error) {
 	v, err := s.current()
 	if err != nil {
@@ -186,6 +188,8 @@ func (s *Store) Threads(cat string) (*forum.Category, []*forum.ThreadScan, error
 		}
 		scans = append(scans, scan)
 	}
+	// LastReplyAt values are all RFC3339 in UTC, so they sort as strings.
+	sort.SliceStable(scans, func(i, j int) bool { return scans[i].LastReplyAt > scans[j].LastReplyAt })
 	return c, scans, nil
 }
 
