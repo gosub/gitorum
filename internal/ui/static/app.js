@@ -63,12 +63,18 @@ async function refreshStatus() {
   const dot   = $('sync-dot');
   const label = $('sync-label');
   const lastSyncEl = $('last-sync');
-  if (STATUS.synced) {
-    dot.className    = 'dot green';
+  if (!STATUS.remote_url) {
+    dot.className     = 'dot grey';
+    label.textContent = 'Local only (no remote)';
+  } else if (STATUS.synced) {
+    dot.className     = 'dot green';
     label.textContent = 'Synced';
   } else {
-    dot.className    = 'dot red';
-    label.textContent = 'Unsynced';
+    dot.className     = 'dot red';
+    const parts = [];
+    if (STATUS.ahead)  parts.push(`${STATUS.ahead} unpushed`);
+    if (STATUS.behind) parts.push(`${STATUS.behind} to pull`);
+    label.textContent = parts.join(', ') || 'Unsynced';
   }
   if (lastSyncEl) {
     lastSyncEl.textContent = STATUS.last_sync_at
@@ -90,12 +96,22 @@ async function triggerSync() {
   const btn = $('sync-btn');
   btn.disabled = true;
   try {
-    await apiFetch('/sync', { method: 'POST' });
+    const res = await apiFetch('/sync', { method: 'POST' });
     await refreshStatus();
     flash('green');
+    const parts = [];
+    if (res.pulled)  parts.push(`pulled ${res.pulled} commit${res.pulled === 1 ? '' : 's'}`);
+    if (res.rebased) parts.push(`replayed ${res.rebased} local commit${res.rebased === 1 ? '' : 's'}`);
+    if (res.pushed)  parts.push('pushed');
+    toast(parts.length ? 'Synced: ' + parts.join(', ') + '.' : 'Already up to date.', 'ok');
+    // Show pulled content, unless that would throw away a draft.
+    const drafting = [...document.querySelectorAll('#view textarea, #view input[type=text]')]
+      .some(el => el.value.trim());
+    if (res.pulled && !drafting) route();
   } catch (e) {
     flash('red');
-    alert('Sync failed: ' + e.message);
+    await refreshStatus();
+    toast('Sync failed: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
   }
@@ -169,7 +185,7 @@ async function submitSetup(_, form) {
   const btn = form.querySelector('[type=submit]');
 
   if (remoteURL && !/^(https?:\/\/|git@|ssh:\/\/)/.test(remoteURL)) {
-    alert('Remote URL must start with https://, http://, git@, or ssh://');
+    toast('Remote URL must start with https://, http://, git@, or ssh://', 'error');
     return;
   }
 
@@ -183,7 +199,7 @@ async function submitSetup(_, form) {
     location.hash = '';
     route();
   } catch (err) {
-    alert('Setup failed: ' + err.message);
+    toast('Setup failed: ' + err.message, 'error');
     if (btn) btn.disabled = false;
   }
 }
@@ -442,13 +458,16 @@ async function submitEdit({ cat, thread, filename }, form) {
     reportPush(res);
     await viewThread(cat, thread);
   } catch (e) {
-    alert('Edit failed: ' + e.message);
+    toast('Edit failed: ' + e.message, 'error');
   }
 }
 
 // reportPush tells the user when a write was saved locally but not shared.
 function reportPush(res) {
-  if (res && res.pushed === false) alert(res.message || 'Saved locally, but not pushed.');
+  if (res && res.pushed === false) {
+    toast((res.message || 'Saved locally, but not pushed.') + ' Use the sync button to retry.', 'warn');
+  }
+  refreshStatus();
 }
 
 // togglePreview swaps a textarea for its server-rendered preview.
@@ -463,7 +482,7 @@ async function togglePreview({ target }, btn) {
     pv.innerHTML = res.body_html || '<p class="empty">Nothing to preview.</p>';
     pv.hidden = false; ta.hidden = true; btn.textContent = 'Edit';
   } catch (e) {
-    alert('Preview failed: ' + e.message);
+    toast('Preview failed: ' + e.message, 'error');
   }
 }
 
@@ -500,16 +519,17 @@ async function submitReply({ cat: catSlug, thread: threadSlug }) {
   if (btn) btn.disabled = true;
 
   try {
-    await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}/reply`, {
+    const res = await apiFetch(`/threads/${u(catSlug)}/${u(threadSlug)}/reply`, {
       method: 'POST',
       body:   JSON.stringify({ body, reply_to: REPLY_TO }),
     });
+    reportPush(res);
     bodyEl.value = '';
     REPLY_TO = '';
     await viewThread(catSlug, threadSlug);
     window.scrollTo(0, document.body.scrollHeight);
   } catch (e) {
-    alert('Submit failed: ' + e.message);
+    toast('Submit failed: ' + e.message, 'error');
     if (btn) btn.disabled = false;
   }
 }
@@ -525,9 +545,10 @@ async function submitNewThread({ cat: catSlug }) {
       method: 'POST',
       body:   JSON.stringify({ category: catSlug, title, slug, body }),
     });
+    reportPush(res);
     location.hash = `#/cat/${u(catSlug)}/thread/${u(res.slug)}`;
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
@@ -549,14 +570,14 @@ function showHide({ cat, thread, filename }) {
 async function adminDelete({ cat: catSlug, thread: threadSlug, filename }) {
   const purge = $('hide-purge')?.checked || false;
   try {
-    await apiFetch('/admin/delete', {
+    reportPush(await apiFetch('/admin/delete', {
       method: 'POST',
       body:   JSON.stringify({ category: catSlug, thread: threadSlug, filename, purge }),
-    });
+    }));
     closeModal();
     await viewThread(catSlug, threadSlug);
   } catch (e) {
-    alert('Hide failed: ' + e.message);
+    toast('Hide failed: ' + e.message, 'error');
   }
 }
 
@@ -603,18 +624,18 @@ async function submitCreateCategory() {
   const slug        = $('nc-slug').value.trim();
   const name        = $('nc-name').value.trim();
   const description = $('nc-desc').value.trim();
-  if (!slug || !name) { alert('Slug and name are required.'); return; }
+  if (!slug || !name) { toast('Slug and name are required.', 'error'); return; }
   try {
-    await apiFetch('/categories', {
+    reportPush(await apiFetch('/categories', {
       method: 'POST',
       body:   JSON.stringify({ slug, name, description }),
-    });
+    }));
     closeModal();
     await refreshStatus();
     location.hash = `#/cat/${u(slug)}`;
     route();
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
@@ -623,7 +644,7 @@ async function showJoinRequests() {
   try {
     data = await apiFetch('/admin/requests');
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
     return;
   }
 
@@ -651,22 +672,22 @@ async function showJoinRequests() {
 
 async function approveJoinRequest({ username }) {
   try {
-    await apiFetch('/admin/approve', { method: 'POST', body: JSON.stringify({ username }) });
+    reportPush(await apiFetch('/admin/approve', { method: 'POST', body: JSON.stringify({ username }) }));
     await refreshStatus();
     await showJoinRequests();
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
 async function rejectJoinRequest({ username }) {
   if (!confirm(`Reject join request from @${username}?`)) return;
   try {
-    await apiFetch('/admin/reject', { method: 'POST', body: JSON.stringify({ username }) });
+    reportPush(await apiFetch('/admin/reject', { method: 'POST', body: JSON.stringify({ username }) }));
     await refreshStatus();
     await showJoinRequests();
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
@@ -675,16 +696,16 @@ async function submitAddKey() {
   const pubkey   = $('ak-pubkey').value.trim();
   const rotate   = $('ak-rotate').checked;
   const token    = $('ak-token').value.trim();
-  if (!token && (!username || !pubkey)) { alert('Paste a join token, or enter a username and key.'); return; }
+  if (!token && (!username || !pubkey)) { toast('Paste a join token, or enter a username and key.', 'error'); return; }
   try {
-    await apiFetch('/admin/addkey', {
+    reportPush(await apiFetch('/admin/addkey', {
       method: 'POST',
       body:   JSON.stringify({ username, pubkey, rotate, token }),
-    });
+    }));
     closeModal();
-    alert(token ? 'Key added from join token.' : `Key for @${username} added.`);
+    toast(token ? 'Key added from join token.' : `Key for @${username} added.`, 'ok');
   } catch (e) {
-    alert('Error: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
@@ -704,9 +725,12 @@ function openModal(html) {
   const overlay = document.createElement('div');
   overlay.id        = 'modal-overlay';
   overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal">${html}</div>`;
+  overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
   document.body.appendChild(overlay);
+  const first = overlay.querySelector('input, textarea, button');
+  if (first) first.focus();
 }
 
 function closeModal() {
@@ -716,6 +740,18 @@ function closeModal() {
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
+
+// toast shows a dismissible message; errors are announced assertively.
+function toast(msg, kind = 'info') {
+  const box = $('toasts');
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  el.innerHTML = `<span>${esc(msg)}</span><button class="toast-close" aria-label="Dismiss">×</button>`;
+  el.querySelector('button').addEventListener('click', () => el.remove());
+  box.appendChild(el);
+  if (kind !== 'error') setTimeout(() => el.remove(), 6000);
+}
 function render(html) { $('view').innerHTML = html; }
 
 function esc(s) {

@@ -8,12 +8,12 @@
 </head>
 <body>
   <div id="app">
-    <nav id="sidebar">
+    <nav id="sidebar" aria-label="Forum navigation">
       <div id="forum-name">Gitorum</div>
 
       <div class="sync-row">
-        <span class="dot" id="sync-dot"></span>
-        <span id="sync-label">Connecting…</span>
+        <span class="dot" id="sync-dot" aria-hidden="true"></span>
+        <span id="sync-label" role="status">Connecting…</span>
         <button class="sync-btn" id="sync-btn" data-action="triggerSync" aria-label="Sync: pull and push" title="Pull &amp; push">⟳</button>
       </div>
       <div id="last-sync"></div>
@@ -44,6 +44,7 @@
     </main>
   </div>
 
+  <div id="toasts" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>
