@@ -3,7 +3,7 @@
 Decentralized git-backed forum. Single Go binary, local web server, no JS build step.
 
 Module path: `github.com/gosub/gitorum`
-Go version: 1.23 (net/http path parameters via `r.PathValue`)
+Go version: 1.24 per `go.mod` (net/http path parameters via `r.PathValue`)
 
 ## Build and run
 

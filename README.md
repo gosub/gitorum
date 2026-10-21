@@ -90,7 +90,7 @@ followed by a blank line and the raw body.
 
 ## Building
 
-Requires Go 1.22 or later.
+Requires Go 1.24 or later (see `go.mod`).
 
 ```sh
 make        # builds build/gitorum
@@ -385,8 +385,16 @@ committed locally and the sidebar shows how many commits are unpushed.
 ## Configuration
 
 On first run the setup page (served at `http://localhost:8080`) prompts for a
-forum name, username, and optional remote URL. Configuration is stored in
-`~/.config/gitorum/config.toml` (or `$XDG_CONFIG_HOME/gitorum/config.toml`).
+forum name, username, and optional remote URL.
+
+Gitorum keeps very little local state:
+
+| What | Where |
+|---|---|
+| Your keypair and username | `~/.config/gitorum/identity.toml` (mode 0600; respects `$XDG_CONFIG_HOME`, overridable with `--identity`) |
+| Pinned admin key | the forum clone's `.git/config`, section `[gitorum]` |
+| Forum name, description, auto-approve | `GITORUM.toml` in the forum repository (shared) |
+| Which threads you have read | your browser's local storage |
 
 ## Dependencies
 
