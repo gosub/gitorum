@@ -147,6 +147,20 @@ type PreviewResponse struct {
 	BodyHTML string `json:"body_html"`
 }
 
+type SearchResponse struct {
+	Results []SearchHit `json:"results"`
+}
+
+type SearchHit struct {
+	Category     string `json:"category"`
+	CategoryName string `json:"category_name"`
+	Thread       string `json:"thread"`
+	ThreadTitle  string `json:"thread_title"`
+	Filename     string `json:"filename"`
+	Author       string `json:"author"`
+	Snippet      string `json:"snippet"`
+}
+
 // ---- generic ---------------------------------------------------------------
 
 type OKResponse struct {

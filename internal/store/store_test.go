@@ -552,3 +552,40 @@ func TestEdit(t *testing.T) {
 		}
 	}
 }
+
+func TestSearch(t *testing.T) {
+	st, admin := newStore(t)
+	if _, err := st.NewThread(admin, "general", "Gardening tips", "", "Tomatoes need sun."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Reply(admin, "general", "gardening-tips", "Basil too, and plenty of WATER.", ""); err != nil {
+		t.Fatal(err)
+	}
+	hidden, _ := st.Reply(admin, "general", "gardening-tips", "secret water hack", "")
+	if err := st.Tombstone(admin, "general", "gardening-tips", hidden, false); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		q    string
+		want int
+	}{
+		{"water", 1}, // case-insensitive; hidden post excluded
+		{"gardening", 1},
+		{"alice", 2}, // author
+		{"nothing-matches", 0},
+		{"  ", 0},
+	}
+	for _, tt := range tests {
+		res, err := st.Search(tt.q, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res) != tt.want {
+			t.Errorf("Search(%q): %d results, want %d", tt.q, len(res), tt.want)
+		}
+	}
+	res, _ := st.Search("water", 0)
+	if len(res) == 1 && (!strings.Contains(res[0].Snippet, "WATER") || res[0].ThreadTitle != "Gardening tips") {
+		t.Errorf("hit: %+v", res[0])
+	}
+}

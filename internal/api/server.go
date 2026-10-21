@@ -67,6 +67,7 @@ func (s *Server) Handler(staticFS fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/threads/{cat}/{thread}/edit", s.handleEdit)
 	mux.HandleFunc("POST /api/threads", s.handleNewThread)
 	mux.HandleFunc("POST /api/preview", s.handlePreview)
+	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("POST /api/categories", s.handleCreateCategory)
 	mux.HandleFunc("GET /api/admin/requests", s.handleJoinRequests)
 	mux.HandleFunc("POST /api/admin/approve", s.handleApproveRequest)

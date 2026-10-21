@@ -456,3 +456,25 @@ func (s *Server) handleEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	pushAfterWrite(w, st, http.StatusCreated)
 }
+
+// GET /api/search?q=
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	st, _, ok := s.ready(w, false)
+	if !ok {
+		return
+	}
+	results, err := st.Search(r.URL.Query().Get("q"), 100)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	out := make([]SearchHit, 0, len(results))
+	for _, h := range results {
+		out = append(out, SearchHit{
+			Category: h.Category, CategoryName: h.CategoryName,
+			Thread: h.Thread, ThreadTitle: h.ThreadTitle,
+			Filename: h.Filename, Author: h.Author, Snippet: h.Snippet,
+		})
+	}
+	writeJSON(w, http.StatusOK, SearchResponse{Results: out})
+}

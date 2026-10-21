@@ -236,3 +236,4 @@ details.advanced summary { cursor: pointer; color: var(--muted); font-size: .85r
 .preview { border: 1px dashed var(--border); border-radius: 4px; padding: .75rem; min-height: 6rem; background: var(--surface); }
 .edited { color: var(--muted); font-size: .75rem; }
 .edit-form { display: flex; flex-direction: column; gap: .5rem; }
+#search-form input { width: 100%; padding: .35rem .5rem; border-radius: 4px; border: 1px solid #444c56; background: #2d333b; color: var(--sidebar-fg); }

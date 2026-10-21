@@ -132,6 +132,7 @@ function route() {
   if (parts[0] === 'cat' && parts.length === 4
       && parts[2] === 'thread')                                    return viewThread(parts[1], parts[3]);
   if (parts[0] === 'new-thread' && parts.length === 2)            return viewNewThread(parts[1]);
+  if (parts[0] === 'search' && parts.length === 2)                return viewSearch(decodeURIComponent(parts[1]));
   viewCategories();
 }
 
@@ -340,6 +341,38 @@ async function viewThread(catSlug, threadSlug) {
     if (t && (!newest || new Date(t) > new Date(newest))) newest = t;
   });
   markSeen(catSlug, threadSlug, newest);
+}
+
+async function viewSearch(q) {
+  $('search-q').value = q;
+  const data = await apiFetch(`/search?q=${u(q)}`).catch(e => {
+    render(`<p class="error-msg">Search failed: ${esc(e.message)}</p>`);
+    return null;
+  });
+  if (!data) return;
+  const results = data.results || [];
+  let h = `<nav class="breadcrumb"><a href="#/">Home</a> › Search</nav>
+    <div class="view-header"><h1>Results for “${esc(q)}”</h1></div>`;
+  if (!results.length) {
+    h += '<p class="empty">No posts match.</p>';
+  } else {
+    h += '<div class="card-list">';
+    results.forEach(r => {
+      h += `<div class="card">
+        <h2><a href="#/cat/${u(r.category)}/thread/${u(r.thread)}">${esc(r.thread_title)}</a></h2>
+        <p>${esc(r.snippet)}</p>
+        <small>${esc(r.author)} · ${esc(r.category_name)}</small>
+      </div>`;
+    });
+    h += '</div>';
+    if (results.length >= 100) h += '<p class="hint">Showing the first 100 matches.</p>';
+  }
+  render(h);
+}
+
+function submitSearch() {
+  const q = $('search-q').value.trim();
+  if (q) location.hash = `#/search/${u(q)}`;
 }
 
 function viewNewThread(catSlug) {
@@ -659,6 +692,7 @@ async function submitAddKey() {
 const ACTIONS = {
   triggerSync, submitSetup, submitReply, submitNewThread, adminDelete, showHide,
   replyTo, cancelReplyTo, scrollToPost, togglePreview, startEdit, cancelEdit, submitEdit,
+  submitSearch,
   showAdminAddKey, showAdminCreateCategory, showJoinRequests,
   submitAddKey, submitCreateCategory, approveJoinRequest, rejectJoinRequest,
   closeModal: () => closeModal(),
