@@ -41,10 +41,14 @@ func LoadThread(fsys fs.FS, category, slug string, ring *KeyRing) (*Thread, erro
 		if entry.IsDir() || !ValidPostFilename(name) {
 			continue
 		}
-		// If a tombstone file exists, include a placeholder so the thread
-		// still shows where the post was (like "[deleted]") without revealing
-		// the original content.
-		if exists(fsys, path.Join(dir, TombstoneFilename(name))) {
+		content, err := fs.ReadFile(fsys, path.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		// If a valid admin tombstone exists, include a placeholder so the
+		// thread still shows where the post was (like "[deleted]") without
+		// revealing the original content. Forged tombstones are ignored.
+		if hiddenBy(fsys, dir, name, content, ring.AdminKey) {
 			ts, _ := parseFilenameTime(name)
 			t.Posts = append(t.Posts, &Post{
 				Filename:   name,
@@ -52,10 +56,6 @@ func LoadThread(fsys fs.FS, category, slug string, ring *KeyRing) (*Thread, erro
 				Tombstoned: true,
 			})
 			continue
-		}
-		content, err := fs.ReadFile(fsys, path.Join(dir, name))
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", name, err)
 		}
 		post, err := ParsePost(name, content)
 		if err != nil {

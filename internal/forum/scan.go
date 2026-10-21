@@ -47,9 +47,12 @@ func ScanThread(fsys fs.FS, category, slug string, ring *KeyRing) (*ThreadScan, 
 		if e.IsDir() || !ValidPostFilename(name) || name == RootFilename {
 			continue
 		}
-		// Skip tombstoned replies.
+		// Skip replies hidden by a valid tombstone.
 		if exists(fsys, path.Join(dir, TombstoneFilename(name))) {
-			continue
+			if content, err := fs.ReadFile(fsys, path.Join(dir, name)); err == nil &&
+				hiddenBy(fsys, dir, name, content, ring.AdminKey) {
+				continue
+			}
 		}
 		replyCount++
 		if ts, ok := parseFilenameTime(name); ok {

@@ -38,6 +38,8 @@ func sigStatusStr(s forum.SigStatus) string {
 		return "invalid"
 	case forum.SigMissing:
 		return "missing"
+	case forum.SigUntrusted:
+		return "untrusted"
 	default:
 		return "unknown"
 	}

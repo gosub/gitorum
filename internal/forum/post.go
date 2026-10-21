@@ -17,9 +17,10 @@ import (
 type SigStatus int
 
 const (
-	SigValid   SigStatus = iota // present and verified
-	SigInvalid                  // present but verification failed
-	SigMissing                  // no public key found for this author
+	SigValid     SigStatus = iota // present and verified
+	SigInvalid                    // present but verification failed
+	SigMissing                    // no public key found for this author
+	SigUntrusted                  // valid signature, but the key is not certified by the admin
 )
 
 // rawFrontMatter holds the TOML-decoded fields from a post's +++ block.
@@ -82,17 +83,34 @@ func ParsePost(filename string, content []byte) (*Post, error) {
 
 // Verify checks the post signature against the author's keys in ring and
 // sets SigStatus and SigError in place.
+//
+// A user may have several keys (after a rotation). The key whose fingerprint
+// matches the post's pubkey field is tried first; the others are tried as a
+// fallback so posts from before the fingerprint field mattered still verify.
 func (p *Post) Verify(ring *KeyRing) {
-	keys := ring.Keys(p.Author)
-	if len(keys) == 0 {
+	uk := ring.User(p.Author)
+	if uk == nil || len(uk.Keys) == 0 {
 		p.SigStatus = SigMissing
 		p.SigError = fmt.Sprintf("no public key for author %q", p.Author)
 		return
+	}
+	keys := make([]string, 0, len(uk.Keys))
+	for _, k := range uk.Keys {
+		if Fingerprint(k) == p.PubKey {
+			keys = append([]string{k}, keys...)
+		} else {
+			keys = append(keys, k)
+		}
 	}
 	canonical := crypto.CanonicalForm(p.fields(), p.Body)
 	var lastErr error
 	for _, k := range keys {
 		if lastErr = crypto.VerifyWithPublicKeyB64(k, canonical, p.Signature); lastErr == nil {
+			if !uk.Certified {
+				p.SigStatus = SigUntrusted
+				p.SigError = uk.Problem
+				return
+			}
 			p.SigStatus = SigValid
 			p.SigError = ""
 			return
@@ -100,6 +118,36 @@ func (p *Post) Verify(ring *KeyRing) {
 	}
 	p.SigStatus = SigInvalid
 	p.SigError = lastErr.Error()
+}
+
+// Fingerprint returns the short key identifier stored in a post's pubkey
+// field (the first 8 characters of the base64 public key).
+func Fingerprint(pubkeyB64 string) string {
+	if len(pubkeyB64) >= 8 {
+		return pubkeyB64[:8]
+	}
+	return pubkeyB64
+}
+
+// VerifyTombstone reports whether tombContent is a valid tombstone for
+// targetContent: signed by adminKey, with parent equal to the target's hash.
+// The hash binding stops a tombstone from being copied onto another post.
+func VerifyTombstone(tombContent, targetContent []byte, adminKey string) error {
+	if adminKey == "" {
+		return fmt.Errorf("no admin key pinned")
+	}
+	tomb, err := ParsePost("tomb", tombContent)
+	if err != nil {
+		return err
+	}
+	if tomb.Parent != PostHash(targetContent) {
+		return fmt.Errorf("tombstone does not reference this post")
+	}
+	canonical := crypto.CanonicalForm(tomb.fields(), tomb.Body)
+	if err := crypto.VerifyWithPublicKeyB64(adminKey, canonical, tomb.Signature); err != nil {
+		return fmt.Errorf("tombstone not signed by the admin: %w", err)
+	}
+	return nil
 }
 
 // fields returns the signed front matter fields.

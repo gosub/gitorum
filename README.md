@@ -55,7 +55,8 @@ The forum data format is a plain directory tree inside a git repository:
 /
 ├── GITORUM.toml                    forum name, description, admin public key
 ├── keys/
-│   └── {username}.pub              each user's Ed25519 public key (base64)
+│   ├── {username}.pub              user's Ed25519 public keys (base64, one per line)
+│   └── {username}.sig              admin signature certifying {username}.pub
 └── {category}/
     ├── META.toml                   category name and description
     └── {thread-slug}/
@@ -144,8 +145,9 @@ wizard instead of the forum.
 gitorum clone <url> [dir]
 ```
 
-Clones a remote forum repository. The directory defaults to the last path
-component of the URL with `.git` stripped. After cloning, run
+Clones a remote forum repository and pins its admin key locally. The
+directory defaults to the last path component of the URL with `.git`
+stripped. After cloning, run
 `gitorum serve --repo <dir>`.
 
 ### `gitorum config`
@@ -160,6 +162,24 @@ With `--name`, updates the forum display name (commits the change).
 With `--remote`, sets the `origin` remote URL.
 With `--auto-approve`, enables automatic approval of join requests when the
 admin runs sync.
+
+### `gitorum verify`
+
+```sh
+gitorum verify [--repo .]
+```
+
+Checks every key certificate, post signature and tombstone against the
+pinned admin key. Exits with status 1 if anything fails.
+
+### `gitorum certify`
+
+```sh
+gitorum certify <username>... [--repo .] [--identity <path>] [--no-push]
+```
+
+Admin only. Signs existing `keys/<username>.pub` files so their posts are
+trusted. Verify each key with its owner first.
 
 ### `gitorum request`
 
@@ -253,17 +273,37 @@ gitorum serve --repo my-forum
 ```
 
 Bob can now read, reply, and start threads. His posts are signed with his
-key and will show a "signed" badge for any participant who has his key in
-the `keys/` directory.
+key, and because the admin certified it on approval they show a "signed"
+badge for every participant.
 
-## Signature verification
+## Trust model
 
-On every read, each post's signature is verified against the key in
-`keys/{author}.pub`. Posts are always displayed regardless of signature
-status; invalid or missing signatures show a visible badge in the UI.
+Signatures only mean something if the keys they are checked against can be
+trusted, and anyone with push access can edit any file in the repository.
+Gitorum therefore anchors trust outside the shared repository:
 
-Only the admin key (stored in `GITORUM.toml`) may sign tombstone files
-that mark posts as deleted.
+- **Pinned admin key.** The admin key is recorded in your local
+  `.git/config` (`[gitorum] adminkey`) by `init`, `clone`, or the first time
+  `serve` opens a repository (trust on first use). Editing `admin_pubkey` in
+  `GITORUM.toml` does not change who the admin is; the UI shows a warning
+  instead. Confirm the fingerprint printed by `clone` with the admin.
+- **Certified user keys.** `keys/<user>.pub` lists a user's keys, one per
+  line. It is trusted only when `keys/<user>.sig` holds the admin's
+  signature over it (approving a request or adding a key writes both).
+  Several keys per user allow rotation: old posts keep verifying.
+- **Admin-only tombstones.** A `.tomb` file hides a post only if the pinned
+  admin key signed it and its `parent` is the hash of that exact post.
+
+Each post shows a badge: **signed** (certified key), **untrusted key** (valid
+signature, but the key was never certified by the admin), **invalid sig**,
+or **no key**. Posts are always displayed regardless of status.
+
+`gitorum verify` audits the whole repository and lists every problem. Forums
+created before key certificates existed can be migrated with
+`gitorum certify <user>...` after checking each key with its owner.
+
+The admin key itself cannot yet be rotated or shared between several admins;
+losing it means re-creating the forum's trust root by hand.
 
 ## Sync model
 

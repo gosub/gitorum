@@ -99,6 +99,9 @@ func Init(path string, meta ForumMeta, identity *crypto.Identity) (*Repo, error)
 	if err := r.commit(identity, "init: initialize forum repository", files, nil); err != nil {
 		return nil, err
 	}
+	if err := r.pinAdminKey(meta.AdminPubkey); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 

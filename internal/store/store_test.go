@@ -4,9 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gosub/gitorum/internal/crypto"
+	"github.com/gosub/gitorum/internal/forum"
 	"github.com/gosub/gitorum/internal/repo"
 	"github.com/gosub/gitorum/internal/store"
 )
@@ -81,7 +83,7 @@ func TestJoinRequests_Lifecycle(t *testing.T) {
 func TestAddKey_NoOverwrite(t *testing.T) {
 	st, admin := newStore(t)
 	mallory := newIdentity(t, "alice")
-	if err := st.AddKey(admin, "alice", mallory.PublicKey); !errors.Is(err, store.ErrExists) {
+	if err := st.AddKey(admin, "alice", mallory.PublicKey, false); !errors.Is(err, store.ErrExists) {
 		t.Errorf("got %v, want ErrExists", err)
 	}
 }
@@ -142,5 +144,161 @@ func TestNotFound(t *testing.T) {
 	}
 	if _, _, err := st.Threads("nope"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Threads: got %v", err)
+	}
+}
+
+// ---- trust ----
+
+func lastPostStatus(t *testing.T, st *store.Store, cat, slug string) forum.SigStatus {
+	t.Helper()
+	th, err := st.Thread(cat, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return th.Posts[len(th.Posts)-1].SigStatus
+}
+
+func TestTrust_ApprovedKeyIsCertified(t *testing.T) {
+	st, admin := newStore(t)
+	bob := newIdentity(t, "bob")
+	if err := st.SubmitJoinRequest(bob); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApproveJoinRequest(admin, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NewThread(bob, "general", "hi", "# Hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigValid {
+		t.Errorf("approved user's post: %v, want SigValid", got)
+	}
+}
+
+func TestTrust_PlantedKeyIsUntrusted(t *testing.T) {
+	st, admin := newStore(t)
+	if err := st.NewThread(admin, "general", "hi", "# Hi"); err != nil {
+		t.Fatal(err)
+	}
+	// Anyone with push access writes their own key file and posts.
+	mallory := newIdentity(t, "mallory")
+	if err := st.Repo().Commit(mallory, "sneak", map[string][]byte{
+		"keys/mallory.pub": []byte(mallory.PublicKey + "\n"),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Reply(mallory, "general", "hi", "trust me"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastPostStatus(t, st, "general", "hi"); got != forum.SigUntrusted {
+		t.Errorf("planted key post: %v, want SigUntrusted", got)
+	}
+
+	// Overwriting alice's key does not let mallory impersonate her either.
+	if err := st.Repo().Commit(mallory, "sneak", map[string][]byte{
+		"keys/alice.pub": []byte(mallory.PublicKey + "\n"),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &crypto.Identity{Username: "alice", PublicKey: mallory.PublicKey, PrivateKey: mallory.PrivateKey}
+	if _, err := st.Reply(fake, "general", "hi", "I am alice"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastPostStatus(t, st, "general", "hi"); got == forum.SigValid {
+		t.Error("impersonation via swapped key file shows as valid")
+	}
+
+	problems, err := st.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) < 3 {
+		t.Errorf("Verify found %d problems, want at least 3: %+v", len(problems), problems)
+	}
+
+	// After the admin certifies mallory (having checked out of band), her
+	// posts are trusted.
+	if err := st.Certify(admin, "mallory"); err != nil {
+		t.Fatal(err)
+	}
+	th, _ := st.Thread("general", "hi")
+	if th.Posts[1].SigStatus != forum.SigValid {
+		t.Errorf("after certify: %v", th.Posts[1].SigStatus)
+	}
+}
+
+func TestTrust_PinnedAdminSurvivesMetaChange(t *testing.T) {
+	st, admin := newStore(t)
+	mallory := newIdentity(t, "mallory")
+	meta, _ := st.Meta()
+	meta.AdminPubkey = mallory.PublicKey
+	data, _ := meta.Encode()
+	if err := st.Repo().Commit(mallory, "take over", map[string][]byte{repo.MetaFile: data}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st.IsAdmin(mallory) {
+		t.Error("mallory became admin by editing GITORUM.toml")
+	}
+	if !st.IsAdmin(admin) {
+		t.Error("pinned admin lost admin rights")
+	}
+	if !st.AdminKeyMismatch() {
+		t.Error("mismatch not reported")
+	}
+	if err := st.CreateCategory(mallory, "evil", "Evil", ""); !errors.Is(err, store.ErrForbidden) {
+		t.Errorf("mallory CreateCategory: %v, want ErrForbidden", err)
+	}
+}
+
+func TestTrust_TOFUPinsOnFirstUse(t *testing.T) {
+	st, admin := newStore(t)
+	// Simulate a clone made with plain git: no pin in .git/config.
+	cfg := filepath.Join(st.Repo().Path, ".git", "config")
+	data, _ := os.ReadFile(cfg)
+	cleaned := strings.Split(string(data), "[gitorum]")[0]
+	if err := os.WriteFile(cfg, []byte(cleaned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := repo.Open(st.Repo().Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PinnedAdminKey() != "" {
+		t.Fatal("pin not removed by test setup")
+	}
+	st2 := store.New(r)
+	if !st2.IsAdmin(admin) {
+		t.Error("admin not recognised after TOFU")
+	}
+	if r.PinnedAdminKey() != admin.PublicKey {
+		t.Error("admin key not pinned on first use")
+	}
+}
+
+func TestAddKey_Rotate(t *testing.T) {
+	st, admin := newStore(t)
+	bobOld, bobNew := newIdentity(t, "bob"), newIdentity(t, "bob")
+	if err := st.AddKey(admin, "bob", bobOld.PublicKey, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NewThread(bobOld, "general", "old", "# Old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddKey(admin, "bob", bobNew.PublicKey, true); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if err := st.AddKey(admin, "bob", bobNew.PublicKey, true); !errors.Is(err, store.ErrExists) {
+		t.Errorf("duplicate rotate: %v", err)
+	}
+	if err := st.AddKey(admin, "nobody", bobNew.PublicKey, true); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("rotate unknown user: %v", err)
+	}
+	if err := st.NewThread(bobNew, "general", "new", "# New"); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"old", "new"} {
+		if got := lastPostStatus(t, st, "general", slug); got != forum.SigValid {
+			t.Errorf("%s: %v, want SigValid", slug, got)
+		}
 	}
 }

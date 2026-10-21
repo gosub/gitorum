@@ -47,6 +47,7 @@ async function refreshStatus() {
   $('forum-name').textContent = STATUS.forum_name || 'Gitorum';
   $('identity').textContent   = STATUS.username ? `@${STATUS.username}` : '(anonymous)';
   $('admin-panel').hidden      = !STATUS.is_admin;
+  $('trust-warning').hidden    = !STATUS.admin_key_mismatch;
 
   // Fetch pending join requests and update button badge if admin.
   if (STATUS.is_admin) {
@@ -376,6 +377,8 @@ function showAdminAddKey() {
     <label>Ed25519 public key (base64)
       <input type="text" id="ak-pubkey" placeholder="AAAA…">
     </label>
+    <label class="checkbox"><input type="checkbox" id="ak-rotate">
+      Key rotation: add this key to an existing user</label>
     <div class="form-actions">
       <button class="btn btn-primary" data-action="submitAddKey">Add Key</button>
       <button class="btn" data-action="closeModal">Cancel</button>
@@ -473,11 +476,12 @@ async function rejectJoinRequest({ username }) {
 async function submitAddKey() {
   const username = $('ak-username').value.trim();
   const pubkey   = $('ak-pubkey').value.trim();
+  const rotate   = $('ak-rotate').checked;
   if (!username || !pubkey) { alert('Both fields are required.'); return; }
   try {
     await apiFetch('/admin/addkey', {
       method: 'POST',
-      body:   JSON.stringify({ username, pubkey }),
+      body:   JSON.stringify({ username, pubkey, rotate }),
     });
     closeModal();
     alert(`Key for @${username} added.`);
@@ -529,6 +533,7 @@ function u(s) { return encodeURIComponent(String(s ?? '')); }
 function sigBadge(post) {
   switch (post.sig_status) {
     case 'valid':   return `<span class="badge badge-ok"   title="Signature verified">✓ signed</span>`;
+    case 'untrusted': return `<span class="badge badge-warn" title="${esc(post.sig_error)}">! untrusted key</span>`;
     case 'invalid': return `<span class="badge badge-err"  title="${esc(post.sig_error)}">✗ invalid sig</span>`;
     case 'missing': return `<span class="badge badge-warn" title="${esc(post.sig_error)}">? no key</span>`;
     default:        return '';

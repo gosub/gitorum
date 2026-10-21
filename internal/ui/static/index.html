@@ -17,6 +17,11 @@
         <button class="sync-btn" id="sync-btn" data-action="triggerSync" aria-label="Sync: pull and push" title="Pull &amp; push">⟳</button>
       </div>
       <div id="last-sync"></div>
+      <div id="trust-warning" class="trust-warning" role="alert" hidden>
+        GITORUM.toml names a different admin key than the one you pinned.
+        Someone changed the forum admin; your pinned key is still used.
+        Run <code>gitorum verify</code>.
+      </div>
 
       <ul id="cat-list"></ul>
 

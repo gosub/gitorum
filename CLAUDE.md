@@ -30,7 +30,7 @@ Go version: 1.23 (net/http path parameters via `r.PathValue`)
 | `internal/store` | Forum operations and on-disk layout; cached reads from HEAD, writes via `repo.Commit` |
 | `internal/api` | HTTP server, JSON handlers |
 | `internal/ui` | `//go:embed static` — index.html, style.css, app.js |
-| `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request |
+| `cmd` | Cobra subcommands: serve, init, keygen, clone, config, request, verify, certify |
 
 ## Post file format
 
@@ -52,7 +52,14 @@ Canonical form for signing: all front matter fields except `signature`,
 sorted alphabetically as `key=value\n` lines, then `\n`, then raw body.
 See `crypto.CanonicalForm`.
 
-Tombstone files: `{original_filename}.tomb` — signed by admin key only.
+Tombstone files: `{original_filename}.tomb`, signed by the admin key, with
+`parent` = hash of the hidden post. Unsigned or mismatched tombstones are
+ignored.
+
+Keys: `keys/{user}.pub` (one base64 key per line) is trusted only with
+`keys/{user}.sig` = admin signature over `forum.KeyCertMessage`. The admin
+key is pinned in `.git/config` (`[gitorum] adminkey`), never read from
+GITORUM.toml for authorization.
 
 ## Key conventions
 

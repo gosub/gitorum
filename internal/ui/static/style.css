@@ -218,3 +218,9 @@ input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow:
   width: 420px; max-width: 92vw; box-shadow: 0 8px 32px rgba(0,0,0,.2);
 }
 .modal h2 { margin-bottom: 1rem; }
+
+/* ── Trust ─────────────────────────────────────────────────────────────────── */
+.trust-warning { background: var(--warn-bg); color: var(--warn); border-radius: 4px; padding: .5rem; font-size: .8rem; }
+.trust-warning code { font-size: .75rem; }
+label.checkbox { display: flex; gap: .4rem; align-items: center; font-weight: 400; }
+label.checkbox input { width: auto; }

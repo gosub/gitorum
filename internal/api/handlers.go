@@ -77,6 +77,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			resp.ForumName = meta.Name
 		}
 		resp.IsAdmin = st.IsAdmin(id)
+		resp.AdminKeyMismatch = st.AdminKeyMismatch()
 		sync := st.Repo().Status()
 		resp.RemoteURL = sync.RemoteURL
 		resp.Ahead, resp.Behind = sync.Ahead, sync.Behind
@@ -396,7 +397,7 @@ func (s *Server) handleAdminAddKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, store.ErrForbidden)
 		return
 	}
-	if err := st.AddKey(id, req.Username, req.PubKey); err != nil {
+	if err := st.AddKey(id, req.Username, req.PubKey, req.Rotate); err != nil {
 		storeError(w, err)
 		return
 	}

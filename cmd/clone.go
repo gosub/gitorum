@@ -8,6 +8,10 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/spf13/cobra"
+
+	"github.com/gosub/gitorum/internal/forum"
+	"github.com/gosub/gitorum/internal/repo"
+	"github.com/gosub/gitorum/internal/store"
 )
 
 var cloneCmd = &cobra.Command{
@@ -54,10 +58,22 @@ func runClone(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("clone: %w", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(absDir, "GITORUM.toml")); err != nil {
-		fmt.Fprintln(os.Stderr, "Warning: GITORUM.toml not found; this may not be a Gitorum forum.")
-	} else {
-		fmt.Fprintf(os.Stderr, "Done. Run: gitorum serve --repo %s\n", absDir)
+	r, err := repo.Open(absDir)
+	if err != nil {
+		return err
 	}
+	meta, err := store.New(r).Meta()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: GITORUM.toml not found; this may not be a Gitorum forum.")
+		return nil
+	}
+	// Pin the admin key now (trust on first use). Later changes to
+	// GITORUM.toml in the shared repo cannot replace it.
+	if err := r.PinAdminKey(meta.AdminPubkey); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Pinned admin key %s. Confirm it with the forum admin out of band.\n",
+		forum.Fingerprint(meta.AdminPubkey))
+	fmt.Fprintf(os.Stderr, "Done. Run: gitorum serve --repo %s\n", absDir)
 	return nil
 }

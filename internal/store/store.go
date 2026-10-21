@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"path"
 	"strings"
 	"sync"
@@ -44,10 +45,11 @@ type Store struct {
 // view is everything derived from one HEAD commit. It is immutable once
 // built, apart from the lazily filled caches guarded by mu.
 type view struct {
-	hash plumbing.Hash
-	fs   fs.FS
-	meta *repo.ForumMeta
-	ring *forum.KeyRing
+	hash     plumbing.Hash
+	fs       fs.FS
+	meta     *repo.ForumMeta
+	adminKey string // pinned locally; authoritative over meta.AdminPubkey
+	ring     *forum.KeyRing
 
 	mu      sync.Mutex
 	threads map[string]*forum.Thread // "cat/slug" -> thread
@@ -83,7 +85,18 @@ func (s *Store) current() (*view, error) {
 		return nil, fmt.Errorf("decode %s: %w", repo.MetaFile, err)
 	}
 	v.meta = &meta
-	if v.ring, err = forum.LoadKeyRing(snap.FS); err != nil {
+
+	// Trust on first use: a repository without a pinned admin key (cloned by
+	// an older version, or with plain git) pins the one it sees now.
+	v.adminKey = s.repo.PinnedAdminKey()
+	if v.adminKey == "" && meta.AdminPubkey != "" {
+		if err := s.repo.PinAdminKey(meta.AdminPubkey); err != nil {
+			return nil, err
+		}
+		log.Printf("pinned forum admin key %s (trust on first use)", forum.Fingerprint(meta.AdminPubkey))
+		v.adminKey = meta.AdminPubkey
+	}
+	if v.ring, err = forum.LoadKeyRing(snap.FS, v.adminKey); err != nil {
 		return nil, err
 	}
 	s.view = v
@@ -102,7 +115,7 @@ func (s *Store) Meta() (*repo.ForumMeta, error) {
 	return &m, nil
 }
 
-// IsAdmin reports whether id holds the forum admin key.
+// IsAdmin reports whether id holds the pinned forum admin key.
 func (s *Store) IsAdmin(id *crypto.Identity) bool {
 	if id == nil {
 		return false
@@ -111,7 +124,18 @@ func (s *Store) IsAdmin(id *crypto.Identity) bool {
 	if err != nil {
 		return false
 	}
-	return id.PublicKey == v.meta.AdminPubkey
+	return v.adminKey != "" && id.PublicKey == v.adminKey
+}
+
+// AdminKeyMismatch reports whether GITORUM.toml names a different admin key
+// than the one pinned locally, which means someone changed the admin in the
+// shared repository. The pinned key keeps being used.
+func (s *Store) AdminKeyMismatch() bool {
+	v, err := s.current()
+	if err != nil {
+		return false
+	}
+	return v.meta.AdminPubkey != v.adminKey
 }
 
 // HasKey reports whether username has a registered key.
@@ -355,8 +379,10 @@ func (s *Store) UpdateMeta(admin *crypto.Identity, meta repo.ForumMeta) error {
 	return s.repo.Commit(admin, "config: update forum metadata", map[string][]byte{repo.MetaFile: data}, nil)
 }
 
-// AddKey registers a public key for a new user.
-func (s *Store) AddKey(admin *crypto.Identity, username, pubkey string) error {
+// AddKey registers a public key for a new user and certifies it. With rotate
+// set, the key is instead appended to an existing user's keys, so posts made
+// with the old key keep verifying.
+func (s *Store) AddKey(admin *crypto.Identity, username, pubkey string, rotate bool) error {
 	if !forum.ValidUsername(username) {
 		return fmt.Errorf("username must be lowercase letters, digits, - and _: %w", ErrInvalid)
 	}
@@ -366,12 +392,75 @@ func (s *Store) AddKey(admin *crypto.Identity, username, pubkey string) error {
 	if err := s.requireAdmin(admin); err != nil {
 		return err
 	}
-	if s.HasKey(username) {
-		return fmt.Errorf("username @%s already has a key: %w", username, ErrExists)
+	v, err := s.current()
+	if err != nil {
+		return err
 	}
-	rel := path.Join(forum.KeysDir, username+".pub")
-	return s.repo.Commit(admin, "keys: add public key for "+username,
-		map[string][]byte{rel: []byte(pubkey + "\n")}, nil)
+	keys := v.ring.Keys(username)
+	msg := "keys: add public key for " + username
+	switch {
+	case rotate && len(keys) == 0:
+		return fmt.Errorf("@%s has no key to rotate: %w", username, ErrNotFound)
+	case rotate:
+		for _, k := range keys {
+			if k == pubkey {
+				return fmt.Errorf("@%s already has this key: %w", username, ErrExists)
+			}
+		}
+		keys = append(append([]string{}, keys...), pubkey)
+		msg = "keys: rotate key for " + username
+	case len(keys) > 0:
+		return fmt.Errorf("username @%s already has a key: %w", username, ErrExists)
+	default:
+		keys = []string{pubkey}
+	}
+	files, err := keyFiles(admin, username, keys)
+	if err != nil {
+		return err
+	}
+	return s.repo.Commit(admin, msg, files, nil)
+}
+
+// keyFiles returns keys/<username>.pub and its admin certificate.
+func keyFiles(admin *crypto.Identity, username string, keys []string) (map[string][]byte, error) {
+	pub := forum.EncodeKeyFile(keys)
+	sig, err := forum.SignKeyFile(admin, username, pub)
+	if err != nil {
+		return nil, fmt.Errorf("certify key: %w", err)
+	}
+	return map[string][]byte{forum.KeyFile(username): pub, forum.CertFile(username): sig}, nil
+}
+
+// Certify signs the existing key file of each username with the admin key.
+// It is used to migrate forums created before keys were certified; the
+// admin should check each key out of band first.
+func (s *Store) Certify(admin *crypto.Identity, usernames ...string) error {
+	if err := s.requireAdmin(admin); err != nil {
+		return err
+	}
+	v, err := s.current()
+	if err != nil {
+		return err
+	}
+	files := map[string][]byte{}
+	for _, u := range usernames {
+		if !forum.ValidUsername(u) {
+			return fmt.Errorf("username %q: %w", u, ErrInvalid)
+		}
+		pub, err := fs.ReadFile(v.fs, forum.KeyFile(u))
+		if err != nil {
+			return fmt.Errorf("key for @%s: %w", u, ErrNotFound)
+		}
+		sig, err := forum.SignKeyFile(admin, u, pub)
+		if err != nil {
+			return err
+		}
+		files[forum.CertFile(u)] = sig
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	return s.repo.Commit(admin, "keys: certify "+strings.Join(usernames, ", "), files, nil)
 }
 
 // SubmitJoinRequest writes requests/<username>.pub with id's public key.
@@ -404,9 +493,11 @@ func (s *Store) ApproveJoinRequest(admin *crypto.Identity, username string) erro
 		return fmt.Errorf("username @%s already has a key: %w", username, ErrExists)
 	}
 	reqRel := path.Join(RequestsDir, username+".pub")
-	keyRel := path.Join(forum.KeysDir, username+".pub")
-	return s.repo.Commit(admin, "keys: approve join request from "+username,
-		map[string][]byte{keyRel: []byte(req.PubKey + "\n")}, []string{reqRel})
+	files, err := keyFiles(admin, username, []string{req.PubKey})
+	if err != nil {
+		return err
+	}
+	return s.repo.Commit(admin, "keys: approve join request from "+username, files, []string{reqRel})
 }
 
 // RejectJoinRequest deletes requests/<username>.pub.

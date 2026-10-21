@@ -36,10 +36,26 @@ func writeKey(t *testing.T, keysDir, username, pubkeyB64 string) {
 	}
 }
 
-// keyRing loads the key ring from root/keys.
+// keyRing loads the key ring from root/keys for fixtures where the (single)
+// author is also the admin: the first key file's first key is pinned.
 func keyRing(t *testing.T, root string) *forum.KeyRing {
 	t.Helper()
-	ring, err := forum.LoadKeyRing(os.DirFS(root))
+	admin := ""
+	if entries, err := os.ReadDir(filepath.Join(root, "keys")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".pub") {
+				data, _ := os.ReadFile(filepath.Join(root, "keys", e.Name()))
+				admin = strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
+				break
+			}
+		}
+	}
+	return keyRingAdmin(t, root, admin)
+}
+
+func keyRingAdmin(t *testing.T, root, adminKey string) *forum.KeyRing {
+	t.Helper()
+	ring, err := forum.LoadKeyRing(os.DirFS(root), adminKey)
 	if err != nil {
 		t.Fatalf("LoadKeyRing: %v", err)
 	}
@@ -678,5 +694,126 @@ func TestScanThread_TombstonedReplyNotCounted(t *testing.T) {
 	}
 	if scan.ReplyCount != 0 {
 		t.Errorf("ReplyCount: got %d, want 0 (tombstoned reply excluded)", scan.ReplyCount)
+	}
+}
+
+// ---- trust ----
+
+// trustFixture writes keys for admin and bob into root/keys. Bob's key is
+// certified by the admin when certify is set.
+func trustFixture(t *testing.T, root string, admin, bob *crypto.Identity, certify bool) {
+	t.Helper()
+	keysDir := filepath.Join(root, "keys")
+	writeKey(t, keysDir, admin.Username, admin.PublicKey)
+	writeKey(t, keysDir, bob.Username, bob.PublicKey)
+	if certify {
+		data, _ := os.ReadFile(filepath.Join(keysDir, bob.Username+".pub"))
+		sig, err := forum.SignKeyFile(admin, bob.Username, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(keysDir, bob.Username+".sig"), sig, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestVerify_Certification(t *testing.T) {
+	admin, bob := mustGenerate(t, "alice"), mustGenerate(t, "bob")
+	tests := []struct {
+		name    string
+		certify bool
+		tamper  bool // swap bob's key after certification
+		author  *crypto.Identity
+		want    forum.SigStatus
+	}{
+		{"admin's own key", false, false, admin, forum.SigValid},
+		{"certified user", true, false, bob, forum.SigValid},
+		{"uncertified user", false, false, bob, forum.SigUntrusted},
+		{"key swapped after certification", true, true, bob, forum.SigUntrusted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			trustFixture(t, root, admin, bob, tt.certify)
+			author := tt.author
+			if tt.tamper {
+				// Mallory replaces bob's key with her own and signs as bob.
+				author = mustGenerate(t, "bob")
+				writeKey(t, filepath.Join(root, "keys"), "bob", author.PublicKey)
+			}
+			post, _ := forum.SignPost(author, "", "hello")
+			post.Verify(keyRingAdmin(t, root, admin.PublicKey))
+			if post.SigStatus != tt.want {
+				t.Errorf("SigStatus: got %v, want %v (%s)", post.SigStatus, tt.want, post.SigError)
+			}
+		})
+	}
+}
+
+func TestVerify_RotatedKeys(t *testing.T) {
+	admin := mustGenerate(t, "alice")
+	oldKey, newKey := mustGenerate(t, "bob"), mustGenerate(t, "bob")
+	root := t.TempDir()
+	keysDir := filepath.Join(root, "keys")
+	writeKey(t, keysDir, "alice", admin.PublicKey)
+	content := forum.EncodeKeyFile([]string{oldKey.PublicKey, newKey.PublicKey})
+	_ = os.WriteFile(filepath.Join(keysDir, "bob.pub"), content, 0o644)
+	sig, _ := forum.SignKeyFile(admin, "bob", content)
+	_ = os.WriteFile(filepath.Join(keysDir, "bob.sig"), sig, 0o644)
+
+	ring := keyRingAdmin(t, root, admin.PublicKey)
+	for _, id := range []*crypto.Identity{oldKey, newKey} {
+		post, _ := forum.SignPost(id, "", "body")
+		post.Verify(ring)
+		if post.SigStatus != forum.SigValid {
+			t.Errorf("key %s: %v (%s)", id.Fingerprint(), post.SigStatus, post.SigError)
+		}
+	}
+}
+
+func TestTombstone_OnlyAdminSignedAndBound(t *testing.T) {
+	admin, bob := mustGenerate(t, "alice"), mustGenerate(t, "bob")
+	root := t.TempDir()
+	trustFixture(t, root, admin, bob, true)
+	threadDir := filepath.Join(root, "cat", "slug")
+	rootContent := signedPost(t, threadDir, forum.RootFilename, admin, "", "Root")
+	hash := forum.PostHash(rootContent)
+	r1 := signedPost(t, threadDir, "1700000000001_aaaaaaaa.md", bob, hash, "reply one")
+	signedPost(t, threadDir, "1700000000002_bbbbbbbb.md", bob, hash, "reply two")
+	r3 := signedPost(t, threadDir, "1700000000003_cccccccc.md", bob, hash, "reply three")
+
+	write := func(name string, tomb *forum.Post) {
+		_ = os.WriteFile(filepath.Join(threadDir, forum.TombstoneFilename(name)), tomb.Format(), 0o644)
+	}
+	// 1: forged by a non-admin user.
+	forged, _ := forum.SignTombstone(bob, r1)
+	write("1700000000001_aaaaaaaa.md", forged)
+	// 2: a genuine admin tombstone for post 3, replayed onto post 2.
+	genuine, _ := forum.SignTombstone(admin, r3)
+	write("1700000000002_bbbbbbbb.md", genuine)
+	// 3: genuine.
+	write("1700000000003_cccccccc.md", genuine)
+	// Root: empty tombstone file.
+	_ = os.WriteFile(filepath.Join(threadDir, forum.TombstoneFilename(forum.RootFilename)), nil, 0o644)
+
+	thread, err := forum.LoadThread(os.DirFS(root), "cat", "slug", keyRingAdmin(t, root, admin.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden := map[string]bool{}
+	for _, p := range thread.Posts {
+		hidden[p.Filename] = p.Tombstoned
+	}
+	want := map[string]bool{
+		forum.RootFilename:          false,
+		"1700000000001_aaaaaaaa.md": false,
+		"1700000000002_bbbbbbbb.md": false,
+		"1700000000003_cccccccc.md": true,
+	}
+	for name, w := range want {
+		if hidden[name] != w {
+			t.Errorf("%s hidden=%v, want %v", name, hidden[name], w)
+		}
 	}
 }

@@ -35,7 +35,8 @@ type ThreadResponse struct {
 }
 
 // PostResponse is the wire representation of a post sent to the browser.
-// SigStatus is "valid", "invalid", "missing", or "deleted" (tombstoned).
+// SigStatus is "valid", "untrusted", "invalid", "missing", or "deleted"
+// (tombstoned).
 type PostResponse struct {
 	Author     string `json:"author"`
 	PubKey     string `json:"pubkey"`
@@ -56,10 +57,13 @@ type StatusResponse struct {
 	ForumName   string `json:"forum_name"`
 	RemoteURL   string `json:"remote_url,omitempty"`
 	Synced      bool   `json:"synced"`
-	Ahead       int    `json:"ahead"`                  // local commits not yet pushed
-	Behind      int    `json:"behind"`                 // fetched remote commits not yet integrated
-	Initialized bool   `json:"initialized"`            // false until forum repo exists
-	LastSyncAt  string `json:"last_sync_at,omitempty"` // RFC3339, set after first sync
+	Ahead       int    `json:"ahead"`  // local commits not yet pushed
+	Behind      int    `json:"behind"` // fetched remote commits not yet integrated
+	Initialized bool   `json:"initialized"`
+	// AdminKeyMismatch is set when GITORUM.toml names an admin key other
+	// than the one pinned locally (the pinned one stays authoritative).
+	AdminKeyMismatch bool   `json:"admin_key_mismatch,omitempty"` // false until forum repo exists
+	LastSyncAt       string `json:"last_sync_at,omitempty"`       // RFC3339, set after first sync
 }
 
 type SetupRequest struct {
@@ -90,6 +94,7 @@ type AdminDeleteRequest struct {
 type AdminAddKeyRequest struct {
 	Username string `json:"username"`
 	PubKey   string `json:"pubkey"`
+	Rotate   bool   `json:"rotate"` // append to an existing user's keys
 }
 
 type CreateCategoryRequest struct {
